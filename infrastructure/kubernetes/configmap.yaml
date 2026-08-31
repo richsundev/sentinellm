@@ -1,0 +1,27 @@
+# Non-secret configuration. Secrets (SENTINEL_SECRET_KEY, DB/Redis
+# credentials, provider API keys) live in secret.yaml.example — copy it to
+# secret.yaml, fill in real values, and never commit the filled-in version.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: sentinellm
+data:
+  SENTINEL_ENV: "production"
+  SENTINEL_LOG_LEVEL: "INFO"
+  SENTINEL_LLM_PROVIDER: "mock"
+  SENTINEL_EMBEDDING_PROVIDER: "mock"
+  SENTINEL_CACHE_ENABLED: "true"
+  SENTINEL_CACHE_SIMILARITY_THRESHOLD: "0.95"
+  SENTINEL_ROUTER_QUALITY_WEIGHT: "0.35"
+  SENTINEL_ROUTER_COST_WEIGHT: "0.35"
+  SENTINEL_ROUTER_LATENCY_WEIGHT: "0.15"
+  SENTINEL_ROUTER_RISK_WEIGHT: "0.15"
+  SENTINEL_REGRESSION_THRESHOLD_PCT: "5.0"
+  SENTINEL_HALLUCINATION_RATE_THRESHOLD: "0.08"
+  SENTINEL_P95_LATENCY_THRESHOLD_MS: "3000"
+  SENTINEL_ERROR_RATE_THRESHOLD: "0.05"
+  SENTINEL_QUALITY_SCORE_THRESHOLD: "0.85"
+  SENTINEL_DAILY_COST_BUDGET: "50.0"
+  SENTINEL_RATE_LIMIT_PER_MINUTE: "120"
+  SENTINEL_API_PORT: "8000"

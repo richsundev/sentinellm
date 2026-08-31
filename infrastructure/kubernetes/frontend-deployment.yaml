@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-frontend
+  namespace: sentinellm
+  labels: { app: sentinel-frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: sentinel-frontend }
+  template:
+    metadata:
+      labels: { app: sentinel-frontend }
+    spec:
+      containers:
+        - name: frontend
+          # NEXT_PUBLIC_* values are baked in at image build time (see
+          # frontend/Dockerfile) — build this image with
+          # --build-arg NEXT_PUBLIC_API_URL=https://api.<your-domain> for a
+          # real deployment; the value below is illustrative only.
+          image: ghcr.io/OWNER/sentinellm-frontend:latest
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /overview, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-frontend
+  namespace: sentinellm
+spec:
+  selector: { app: sentinel-frontend }
+  ports: [{ port: 3000, targetPort: 3000 }]

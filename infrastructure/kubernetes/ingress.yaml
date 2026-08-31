@@ -1,0 +1,28 @@
+# Example ingress assuming an nginx-ingress-controller and cert-manager are
+# already installed in the cluster. Replace the host and
+# cert-manager.io/cluster-issuer annotation for your environment.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sentinellm
+  namespace: sentinellm
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["sentinellm.example.com"]
+      secretName: sentinellm-tls
+  rules:
+    - host: sentinellm.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: sentinel-api, port: { number: 8000 } }
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: sentinel-frontend, port: { number: 3000 } }

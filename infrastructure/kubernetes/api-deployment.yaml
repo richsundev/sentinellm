@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-api
+  namespace: sentinellm
+  labels: { app: sentinel-api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: sentinel-api }
+  template:
+    metadata:
+      labels: { app: sentinel-api }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/OWNER/sentinellm-api:latest
+          ports: [{ containerPort: 8000 }]
+          envFrom:
+            - configMapRef: { name: sentinel-config }
+            - secretRef: { name: sentinel-secrets }
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-api
+  namespace: sentinellm
+spec:
+  selector: { app: sentinel-api }
+  ports: [{ port: 8000, targetPort: 8000 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sentinel-api
+  namespace: sentinellm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sentinel-api
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

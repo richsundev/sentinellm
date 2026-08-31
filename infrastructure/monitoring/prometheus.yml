@@ -1,0 +1,23 @@
+# Local/dev Prometheus config. Not wired into docker-compose.yml by default
+# (keeping the default `docker compose up` footprint small); run it
+# separately if you want to see the metrics scraped in Prometheus:
+#
+#   docker run --rm -p 9090:9090 --network sentinellm_default \
+#     -v $(pwd)/infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml \
+#     prom/prometheus
+#
+# then open http://localhost:9090 and query e.g. sentinel_llm_cost_total.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alert_rules.yml
+
+scrape_configs:
+  - job_name: sentinel-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: sentinel-api

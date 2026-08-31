@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-base-950 text-base-100;
+}
+
+* {
+  scrollbar-color: theme("colors.base.600") theme("colors.base.900");
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: theme("colors.base.900");
+}
+
+::-webkit-scrollbar-thumb {
+  background: theme("colors.base.600");
+  border-radius: 9999px;
+}
+
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: theme("colors.base.700");
+}
+
+.recharts-text {
+  fill: theme("colors.base.400");
+  font-size: 11px;
+}

@@ -1,0 +1,34 @@
+# Example Prometheus alerting rules mirroring the application-level alert
+# rules in `sentinellm.worker.tasks.alerting` (which write to the `alerts`
+# table and fire the webhook). These are the *infrastructure*-level
+# equivalents an operator would wire into Alertmanager — request-latency
+# and error-rate SLOs computed straight from the exported Prometheus
+# metrics, independent of whether the application's own DB-backed alerting
+# loop is healthy.
+groups:
+  - name: sentinellm.rules
+    rules:
+      - alert: SentinelHighErrorRate
+        expr: |
+          sum(rate(sentinel_requests_total{status=~"5.."}[5m]))
+          / sum(rate(sentinel_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: high }
+        annotations:
+          summary: "SentinelLLM API 5xx rate above 5% for 5 minutes"
+
+      - alert: SentinelHighP95Latency
+        expr: |
+          histogram_quantile(0.95, sum(rate(sentinel_request_latency_seconds_bucket[5m])) by (le)) > 3
+        for: 10m
+        labels: { severity: medium }
+        annotations:
+          summary: "SentinelLLM API P95 latency above 3s for 10 minutes"
+
+      - alert: SentinelLLMProviderErrorSpike
+        expr: |
+          sum(rate(sentinel_llm_errors_total[5m])) by (model) > 1
+        for: 5m
+        labels: { severity: high }
+        annotations:
+          summary: "Elevated LLM provider error rate for model {{ $labels.model }}"

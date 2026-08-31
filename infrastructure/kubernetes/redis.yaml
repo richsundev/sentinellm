@@ -1,0 +1,36 @@
+# Single-replica in-cluster Redis. A real deployment should use a managed
+# Redis (ElastiCache/Memorystore) or the Bitnami/redis-operator chart for
+# persistence and failover — this is the demo/dev-cluster version.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: sentinellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "200m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: sentinellm
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379, targetPort: 6379 }]

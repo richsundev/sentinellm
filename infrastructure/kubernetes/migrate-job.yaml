@@ -1,0 +1,20 @@
+# Run once per deploy (e.g. via `kubectl apply` in a CI/CD step, or as a Helm
+# pre-upgrade hook if this is later converted to a chart) BEFORE rolling the
+# api/worker deployments. Re-running is safe: Alembic no-ops if already at head.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sentinel-migrate
+  namespace: sentinellm
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/OWNER/sentinellm-api:latest
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: sentinel-config }
+            - secretRef: { name: sentinel-secrets }

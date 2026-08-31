@@ -1,0 +1,153 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { api } from "@/lib/api";
+import { useFetch } from "@/lib/useFetch";
+import { useFilters } from "@/lib/filters-context";
+import { FilterBar } from "@/components/FilterBar";
+import { DataTable, Pagination, type Column } from "@/components/DataTable";
+import { ErrorState, SkeletonTable } from "@/components/StateViews";
+import { StatusBadge } from "@/components/StatusBadge";
+import type { Trace } from "@/lib/types";
+import { formatCost, formatDate, formatMs, truncate } from "@/lib/format";
+
+const LIMIT = 25;
+
+export default function TracesPage() {
+  const router = useRouter();
+  const { environment } = useFilters();
+  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("");
+  const [applicationId, setApplicationId] = useState("");
+  const [status, setStatus] = useState("");
+  const [offset, setOffset] = useState(0);
+
+  const { data, loading, error, refetch } = useFetch(
+    () =>
+      api.listTraces({
+        limit: LIMIT,
+        offset,
+        model: model || undefined,
+        provider: provider || undefined,
+        application_id: applicationId || undefined,
+        environment: environment === "all" ? undefined : environment,
+        status: status || undefined,
+      }),
+    [model, provider, applicationId, environment, status, offset]
+  );
+
+  const columns: Column<Trace>[] = [
+    {
+      key: "created_at",
+      header: "Time",
+      render: (t) => <span className="font-mono text-xs">{formatDate(t.created_at)}</span>,
+      sortValue: (t) => t.created_at,
+    },
+    {
+      key: "trace_id",
+      header: "Trace ID",
+      render: (t) => (
+        <span className="font-mono text-xs text-accent">{truncate(t.trace_id, 18)}</span>
+      ),
+      sortValue: (t) => t.trace_id,
+    },
+    {
+      key: "application_id",
+      header: "Application",
+      render: (t) => t.application_id,
+      sortValue: (t) => t.application_id,
+    },
+    {
+      key: "model",
+      header: "Model",
+      render: (t) => <span className="font-mono text-xs">{t.model}</span>,
+      sortValue: (t) => t.model,
+    },
+    {
+      key: "provider",
+      header: "Provider",
+      render: (t) => t.provider,
+      sortValue: (t) => t.provider,
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (t) => <StatusBadge status={t.status} />,
+      sortValue: (t) => t.status,
+    },
+    {
+      key: "latency_ms",
+      header: "Latency",
+      align: "right",
+      render: (t) => formatMs(t.latency_ms),
+      sortValue: (t) => t.latency_ms,
+    },
+    {
+      key: "estimated_cost",
+      header: "Cost",
+      align: "right",
+      render: (t) => formatCost(t.estimated_cost),
+      sortValue: (t) => t.estimated_cost,
+    },
+    {
+      key: "quality",
+      header: "Quality",
+      align: "right",
+      render: (t) =>
+        t.evaluation ? t.evaluation.overall_quality.toFixed(2) : "—",
+      sortValue: (t) => t.evaluation?.overall_quality ?? -1,
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <FilterBar
+        model={model}
+        onModelChange={(v) => {
+          setModel(v);
+          setOffset(0);
+        }}
+        provider={provider}
+        onProviderChange={(v) => {
+          setProvider(v);
+          setOffset(0);
+        }}
+        applicationId={applicationId}
+        onApplicationIdChange={(v) => {
+          setApplicationId(v);
+          setOffset(0);
+        }}
+        status={status}
+        onStatusChange={(v) => {
+          setStatus(v);
+          setOffset(0);
+        }}
+      />
+
+      {error && <ErrorState message={error} onRetry={refetch} />}
+
+      {!error && (loading || !data) && <SkeletonTable rows={8} cols={9} />}
+
+      {!error && data && (
+        <>
+          <DataTable<Trace>
+            columns={columns}
+            rows={data.items}
+            rowKey={(t) => t.id}
+            onRowClick={(t) => router.push(`/trace/${encodeURIComponent(t.trace_id)}`)}
+            emptyTitle="No traces found"
+            emptyMessage="Try widening your filters or time range."
+            defaultSortKey="created_at"
+          />
+          <Pagination
+            offset={data.offset}
+            limit={data.limit}
+            total={data.total}
+            onPageChange={setOffset}
+          />
+        </>
+      )}
+    </div>
+  );
+}
