@@ -30,10 +30,24 @@ export function useFetch<T>(
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
+
+  // Keep the ref pointed at the latest closure without mutating it during
+  // render (react-hooks/refs) — this effect runs on every commit, ordered
+  // before the fetch effect below, so the fetch effect always sees the
+  // fetcher from the same render it was triggered by.
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
 
   useEffect(() => {
     let cancelled = false;
+    // This is the standard "reset loading state before a dependency-driven
+    // refetch" pattern (see React's own data-fetching docs). The stricter
+    // react-hooks/set-state-in-effect rule is aimed at components that will
+    // run under the React Compiler, which this project doesn't use; the
+    // synchronous reset here is intentional so stale data isn't shown while
+    // a new fetch (e.g. after a time-range change) is in flight.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     setError(null);
     fetcherRef

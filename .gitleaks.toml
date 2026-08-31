@@ -1,0 +1,20 @@
+# Extends gitleaks' default ruleset; adds allowlist entries for known
+# non-secret values that its generic `curl-auth-header` rule otherwise
+# flags across this repo's own documentation and CI examples.
+title = "sentinellm gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secret placeholder values used throughout docs/CI examples"
+regexes = [
+  # The documented, well-known local-demo API key — seeded by
+  # scripts/seed_demo.py, used in every curl/README example, and never a
+  # real credential (see .env.example / docs/security.md).
+  '''demo-api-key''',
+  # A Recharts `dataKey`/column-key literal (the API metric field name
+  # `p95_latency_ms`), not a secret — its shape just happens to trip the
+  # generic-api-key heuristic rule's entropy threshold.
+  '''p95_latency_ms''',
+]
