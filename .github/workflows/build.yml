@@ -54,6 +54,33 @@ jobs:
           docker compose logs
           exit 1
 
+      - name: Wait for seed job to complete
+        # The API becomes healthy (previous step) as soon as the process
+        # starts — independent of whether the one-shot `seed` container has
+        # finished populating the database. Querying the API for seed data
+        # right after the health check is a race: `seed` takes several
+        # seconds (real evaluator/router/cache work over ~70 traces) and can
+        # still be running. Wait for the `seed` container to actually exit
+        # before checking what it produced.
+        run: |
+          container_id=$(docker compose ps -q seed)
+          for i in $(seq 1 60); do
+            status=$(docker inspect --format='{{.State.Status}}' "$container_id")
+            if [ "$status" = "exited" ]; then
+              exit_code=$(docker inspect --format='{{.State.ExitCode}}' "$container_id")
+              if [ "$exit_code" != "0" ]; then
+                echo "seed job exited with code $exit_code"
+                docker compose logs seed
+                exit 1
+              fi
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "seed job did not complete in time"
+          docker compose logs seed
+          exit 1
+
       - name: Verify seed data landed
         run: |
           curl -sf -H "X-API-Key: demo-api-key" \
