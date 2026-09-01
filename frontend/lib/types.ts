@@ -134,6 +134,41 @@ export interface Alert {
   affected_model: string | null;
 }
 
+export interface AlertRule {
+  id: string;
+  rule: string;
+  threshold: number;
+  severity: Severity;
+  enabled: boolean;
+  description: string;
+}
+
+export interface Application {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface ApiKey {
+  id: string;
+  application_id: string;
+  name: string;
+  role: "read" | "write" | "admin";
+  key_prefix: string;
+  revoked: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface ApiKeyCreated {
+  id: string;
+  name: string;
+  role: string;
+  key_prefix: string;
+  plaintext_key: string;
+}
+
 export type PromptStatus = "draft" | "testing" | "production" | "deprecated";
 
 export interface PromptVersion {
@@ -160,7 +195,34 @@ export interface Experiment {
   cost_per_request: number;
   pass_rate: number;
   git_commit: string;
+  parameters: Record<string, unknown>;
   created_at: string;
+}
+
+export interface ExperimentRunRequest {
+  name: string;
+  model: string;
+  prompt_id: string;
+  prompt_version: number;
+  dataset_id: string;
+  application_id?: string;
+  sample_size?: number;
+  quality_pass_threshold?: number;
+}
+
+export interface MetricComparison {
+  metric_name: string;
+  value_a: number;
+  value_b: number;
+  delta: number;
+  delta_pct: number | null;
+  better: "a" | "b" | "tie";
+}
+
+export interface ExperimentComparison {
+  experiment_a: Experiment;
+  experiment_b: Experiment;
+  metrics: MetricComparison[];
 }
 
 export interface Dataset {

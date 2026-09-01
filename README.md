@@ -3,7 +3,7 @@
 **Autonomous LLM Reliability, Evaluation, Observability & Optimization Platform**
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows)
-[![Tests](https://img.shields.io/badge/tests-73_passing-brightgreen)](tests)
+[![Tests](https://img.shields.io/badge/tests-117_passing-brightgreen)](tests)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](frontend/tsconfig.json)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
@@ -152,15 +152,17 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 | Intelligent model router with explainable scoring | ✅ | `routing_score = f(quality, cost, latency, risk)`, min-max normalized |
 | Resilient execution (retry + backoff + jitter + fallback chain) | ✅ | Distinguishes retryable vs. terminal errors (e.g. context overflow) |
 | Prompt registry with versioning + status lifecycle | ✅ | draft → testing → production → deprecated |
-| Experiment tracking + comparison | ✅ | Real aggregate metrics, not fixtures |
+| On-demand experiment runs (`POST /experiments/run`) | ✅ | Runs the real generate+evaluate pipeline over a dataset, not just seed-script output |
+| Server-computed experiment comparison (`GET /experiments/compare`) | ✅ | Per-metric delta/delta_pct/winner, not just a client-side chart |
+| Dataset import from `.jsonl`/`.csv` upload | ✅ | `POST /datasets/import`, alongside inline-JSON `POST /datasets` |
 | Automated regression detection | ✅ | Windowed comparison + likely-cause diffing |
 | Semantic response cache | ✅ | Cosine similarity over a shared embedding abstraction |
 | Cost tracking + "cheaper model, similar quality" insight | ✅ | Computed live from stored traces, never hardcoded |
-| Alerting with webhook delivery + dedup | ✅ | Mock webhook endpoint for local dev |
-| API-key auth with RBAC (read/write/admin) | ✅ | SHA-256-hashed keys, shown once at creation |
+| Alerting with configurable thresholds, webhook delivery + dedup | ✅ | Thresholds live in the `alert_rules` table, editable from Settings / `PATCH /alerts/rules/{rule}` — env vars only seed the defaults |
+| API-key auth with RBAC (read/write/admin) | ✅ | SHA-256-hashed keys, shown once at creation, real create/list UI on Settings |
 | Rate limiting | ✅ | Per-key moving-window limiter |
 | Prometheus metrics + structured logs + correlation IDs | ✅ | `/metrics`, OpenTelemetry tracer configured |
-| Full dashboard (13 pages) | ✅ | Next.js 14, TypeScript strict, Recharts |
+| Full dashboard (13 pages) | ✅ | Next.js 16, TypeScript strict, Recharts |
 | Docker Compose one-command demo | ✅ | Postgres + Redis + migrate + seed + api + worker + frontend |
 | Kubernetes manifests | ⚠️ | Demonstrates the shape; explicitly documents production gaps ([infra README](infrastructure/kubernetes/README.md)) |
 | CI (test/lint/build/security) | ✅ | 4 GitHub Actions workflows |
@@ -168,9 +170,9 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 ## Technology stack
 
 **Backend:** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2.0 (async), Alembic, PostgreSQL, Redis, httpx, structlog, OpenTelemetry, prometheus-client
-**Frontend:** Next.js 14 (App Router), TypeScript (strict), Tailwind CSS, Recharts
+**Frontend:** Next.js 16 (App Router), TypeScript (strict), Tailwind CSS, Recharts
 **Infra:** Docker, Docker Compose, Kubernetes manifests, GitHub Actions
-**Testing:** pytest + pytest-asyncio (73 backend tests, all offline/deterministic), Jest + React Testing Library (13 frontend tests)
+**Testing:** pytest + pytest-asyncio (117 backend tests, all offline/deterministic), Jest + React Testing Library (13 frontend tests)
 
 ## Quick start
 
@@ -368,7 +370,7 @@ Details: **[docs/observability.md](docs/observability.md)**.
 
 ## Testing
 
-73 backend tests (unit + integration + API), all deterministic and runnable
+117 backend tests (unit + integration + API), all deterministic and runnable
 with **zero external services** (SQLite + `MockProvider` +
 `MockEmbeddingProvider`):
 

@@ -281,6 +281,22 @@ class Alert(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AlertRuleConfig(Base, TimestampMixin):
+    """Configurable threshold for one alert rule (distinct from `Alert`,
+    which records a firing — this table holds the *rule definition* an
+    operator can tune from the Settings page instead of only via env vars).
+    """
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    rule: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+
+
 class SemanticCacheEntry(Base, TimestampMixin):
     __tablename__ = "semantic_cache_entries"
     __table_args__ = (Index("ix_cache_application_model", "application_id", "model"),)

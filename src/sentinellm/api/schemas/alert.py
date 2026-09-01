@@ -2,7 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class AlertRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    rule: str
+    threshold: float
+    severity: str
+    enabled: bool
+    description: str
+
+
+class AlertRuleUpdate(BaseModel):
+    threshold: float | None = Field(default=None)
+    enabled: bool | None = Field(default=None)
 
 
 class AlertOut(BaseModel):

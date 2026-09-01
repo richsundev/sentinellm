@@ -78,3 +78,12 @@ exclude = ["tests/", "scripts/"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["sentinellm"]
+# SQLAlchemy's async engine bridges to sync drivers via the `greenlet`
+# library (`greenlet_spawn`). Without this, coverage.py's tracer doesn't
+# follow execution across that greenlet switch, so every DB-query-heavy
+# async function reports as largely "uncovered" even when tests genuinely
+# exercise it end-to-end — this isn't a testing gap, it's a measurement gap.
+concurrency = ["greenlet", "thread"]

@@ -34,7 +34,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 
 from sqlalchemy import select
@@ -44,6 +43,7 @@ from sqlalchemy.orm import selectinload
 from sentinellm.api.schemas.generate import GenerateRequest
 from sentinellm.api.security import generate_api_key, hash_api_key, key_display_prefix
 from sentinellm.core.config import get_settings
+from sentinellm.core.git import get_git_commit
 from sentinellm.db.models import (
     APIKey,
     Application,
@@ -80,22 +80,6 @@ _HIGH_RISK_QUESTIONS = [
     "We received a legal notice about a data breach affecting EU customers — what is the "
     "required incident disclosure timeline under GDPR?",
 ]
-
-
-def _git_commit() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "unknown"
 
 
 def _load_dataset_records() -> list[dict]:
@@ -208,6 +192,10 @@ async def _seed_prompts(session: AsyncSession) -> tuple[PromptVersion, PromptVer
 
 
 async def _evaluate_all(session: AsyncSession, traces: list[Trace]) -> None:
+    # Every GenerateRequest below passes evaluate=False so `generate()` never
+    # enqueues a redundant worker job for a trace this function is about to
+    # evaluate inline anyway (the worker would otherwise just log a no-op
+    # "already completed" skip for each one — harmless, but noisy and wasteful).
     pipeline = get_evaluation_pipeline()
     for trace in traces:
         await pipeline.run_and_persist(session, trace)
@@ -227,6 +215,7 @@ async def _run_routing_showcase(
             dataset_id=dataset_id,
             prompt_id="support-answer",
             prompt_version=1,
+            evaluate=False,
         )
         traces.append(await run_generate(session, req))
 
@@ -237,6 +226,7 @@ async def _run_routing_showcase(
             dataset_id=dataset_id,
             prompt_id="support-answer",
             prompt_version=1,
+            evaluate=False,
         )
         traces.append(await run_generate(session, req))
 
@@ -247,6 +237,7 @@ async def _run_routing_showcase(
             dataset_id=dataset_id,
             prompt_id="support-answer",
             prompt_version=1,
+            evaluate=False,
         )
         traces.append(await run_generate(session, req))
 
@@ -262,6 +253,7 @@ async def _run_routing_showcase(
             dataset_id=dataset_id,
             prompt_id="support-answer",
             prompt_version=1,
+            evaluate=False,
         )
         traces.append(await run_generate(session, req))
 
@@ -287,6 +279,7 @@ async def _run_regression_showcase(
             dataset_id=dataset_id,
             prompt_id="support-answer",
             prompt_version=1,
+            evaluate=False,
         )
         era1.append(await run_generate(session, req))
     await session.flush()
@@ -303,6 +296,7 @@ async def _run_regression_showcase(
             dataset_id=dataset_id,
             prompt_id="support-answer",
             prompt_version=2,
+            evaluate=False,
         )
         era2.append(await run_generate(session, req))
     await session.flush()
@@ -317,7 +311,7 @@ async def _run_regression_showcase(
 async def _seed_experiments(
     session: AsyncSession, dataset_id: str, era1: list[Trace], era2: list[Trace]
 ) -> None:
-    git_commit = _git_commit()
+    git_commit = get_git_commit()
     for name, model, prompt_version, traces in (
         ("support-answer v1 on sentinel-pro", "mock:sentinel-pro", 1, era1),
         ("support-answer v2 on sentinel-nano", "mock:sentinel-nano", 2, era2),

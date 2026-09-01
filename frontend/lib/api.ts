@@ -1,10 +1,16 @@
 import type {
   Alert,
+  AlertRule,
+  ApiKey,
+  ApiKeyCreated,
+  Application,
   CostSummary,
   Dataset,
   DatasetRecord,
   Evaluation,
   Experiment,
+  ExperimentComparison,
+  ExperimentRunRequest,
   ModelInfo,
   OverviewMetrics,
   Paginated,
@@ -77,6 +83,47 @@ async function request<T>(path: string, params?: QueryParams): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function mutate<T>(
+  path: string,
+  options: { method: "POST" | "PATCH"; body?: unknown; formData?: FormData }
+): Promise<T> {
+  const url = new URL(`${API_PREFIX}${path}`, API_BASE_URL);
+  const headers: Record<string, string> = { "X-API-Key": API_KEY, Accept: "application/json" };
+  let bodyInit: BodyInit | undefined;
+  if (options.formData) {
+    // Let the browser set Content-Type (with multipart boundary) itself.
+    bodyInit = options.formData;
+  } else if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    bodyInit = JSON.stringify(options.body);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), { method: options.method, headers, body: bodyInit });
+  } catch (err) {
+    throw new ApiError(
+      err instanceof Error ? err.message : "Network error reaching API",
+      0
+    );
+  }
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      if (body && typeof body === "object" && "detail" in body) {
+        detail = String((body as { detail: unknown }).detail);
+      }
+    } catch {
+      // ignore body parse failures
+    }
+    throw new ApiError(detail || `Request failed with ${res.status}`, res.status);
+  }
+
+  return (await res.json()) as T;
+}
+
 export type TraceFilters = {
   limit?: number;
   offset?: number;
@@ -126,6 +173,27 @@ export const api = {
     request<OverviewMetrics>("/metrics/overview", { range }),
   getCostSummary: (range: TimeRange = "30d") =>
     request<CostSummary>("/metrics/cost", { range }),
+
+  // Alert rule configuration (Settings page).
+  listAlertRules: () => request<AlertRule[]>("/alerts/rules"),
+  updateAlertRule: (rule: string, payload: { threshold?: number; enabled?: boolean }) =>
+    mutate<AlertRule>(`/alerts/rules/${encodeURIComponent(rule)}`, { method: "PATCH", body: payload }),
+
+  // Application / API key management (Settings page).
+  listApplications: () => request<Paginated<Application>>("/applications"),
+  listApiKeys: () => request<Paginated<ApiKey>>("/applications/api-keys"),
+  createApiKey: (payload: { application_id: string; name: string; role: "read" | "write" | "admin" }) =>
+    mutate<ApiKeyCreated>("/applications/api-keys", { method: "POST", body: payload }),
+
+  // Dataset import (Datasets page).
+  importDataset: (formData: FormData) =>
+    mutate<Dataset>("/datasets/import", { method: "POST", formData }),
+
+  // Experiment runs + comparison (Experiments page).
+  runExperiment: (payload: ExperimentRunRequest) =>
+    mutate<Experiment>("/experiments/run", { method: "POST", body: payload }),
+  compareExperiments: (a: string, b: string) =>
+    request<ExperimentComparison>("/experiments/compare", { a, b }),
 };
 
 export type Api = typeof api;

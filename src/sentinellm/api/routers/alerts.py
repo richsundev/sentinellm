@@ -1,16 +1,46 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.api.deps import RequireRead, get_db
-from sentinellm.api.schemas.alert import AlertOut, RegressionOut
+from sentinellm.api.deps import RequireRead, RequireWrite, get_db
+from sentinellm.api.schemas.alert import AlertOut, AlertRuleOut, AlertRuleUpdate, RegressionOut
 from sentinellm.api.schemas.common import Page
-from sentinellm.db.models import Alert, Regression
+from sentinellm.db.models import Alert, AlertRuleConfig, Regression
+from sentinellm.worker.tasks.alerting import ensure_default_alert_rules
 
 alerts_router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
 regressions_router = APIRouter(prefix="/api/v1/regressions", tags=["regressions"])
+
+
+@alerts_router.get("/rules", response_model=list[AlertRuleOut], dependencies=[Depends(RequireRead)])
+async def list_alert_rules(db: AsyncSession = Depends(get_db)) -> list[AlertRuleOut]:
+    await ensure_default_alert_rules(db)
+    rows = (
+        (await db.execute(select(AlertRuleConfig).order_by(AlertRuleConfig.rule))).scalars().all()
+    )
+    return [AlertRuleOut.model_validate(r) for r in rows]
+
+
+@alerts_router.patch(
+    "/rules/{rule}", response_model=AlertRuleOut, dependencies=[Depends(RequireWrite)]
+)
+async def update_alert_rule(
+    rule: str, payload: AlertRuleUpdate, db: AsyncSession = Depends(get_db)
+) -> AlertRuleOut:
+    await ensure_default_alert_rules(db)
+    row = (
+        await db.execute(select(AlertRuleConfig).where(AlertRuleConfig.rule == rule))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"alert rule '{rule}' not found")
+    if payload.threshold is not None:
+        row.threshold = payload.threshold
+    if payload.enabled is not None:
+        row.enabled = payload.enabled
+    await db.flush()
+    return AlertRuleOut.model_validate(row)
 
 
 @alerts_router.get("", response_model=Page[AlertOut], dependencies=[Depends(RequireRead)])

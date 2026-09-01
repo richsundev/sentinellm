@@ -11,11 +11,12 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
 import { DataTable, type Column } from "@/components/DataTable";
 import { ErrorState, SkeletonTable, EmptyState } from "@/components/StateViews";
+import { StatusBadge } from "@/components/StatusBadge";
 import type { Experiment } from "@/lib/types";
 import { formatCost, formatDate, formatMs, formatPercent } from "@/lib/format";
 
@@ -148,6 +149,8 @@ export default function ExperimentsPage() {
 
   return (
     <div className="space-y-4">
+      <RunExperimentPanel onRun={refetch} />
+
       {error && <ErrorState message={error} onRetry={refetch} />}
       {!error && (loading || !data) && <SkeletonTable rows={8} cols={10} />}
 
@@ -161,7 +164,7 @@ export default function ExperimentsPage() {
             rows={data.items}
             rowKey={(e) => e.id}
             emptyTitle="No experiments"
-            emptyMessage="Run an evaluation experiment to see results here."
+            emptyMessage="Run an evaluation experiment above to see results here."
             defaultSortKey="created_at"
           />
 
@@ -195,8 +198,156 @@ export default function ExperimentsPage() {
               )
             )}
           </Panel>
+
+          {selected.length === 2 && (
+            <DetailedComparisonPanel idA={selected[0]} idB={selected[1]} />
+          )}
         </>
       )}
     </div>
+  );
+}
+
+function RunExperimentPanel({ onRun }: { onRun: () => void }) {
+  const [name, setName] = useState("");
+  const [model, setModel] = useState("");
+  const [promptId, setPromptId] = useState("");
+  const [promptVersion, setPromptVersion] = useState("1");
+  const [datasetId, setDatasetId] = useState("");
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  async function handleRun() {
+    if (!name.trim() || !model.trim() || !promptId.trim() || !datasetId.trim()) return;
+    setRunning(true);
+    setRunError(null);
+    try {
+      await api.runExperiment({
+        name: name.trim(),
+        model: model.trim(),
+        prompt_id: promptId.trim(),
+        prompt_version: Number(promptVersion) || 1,
+        dataset_id: datasetId.trim(),
+      });
+      setName("");
+      onRun();
+    } catch (err) {
+      setRunError(err instanceof ApiError ? err.message : "Experiment run failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Run an evaluation experiment"
+      action={
+        <span className="text-[10px] text-base-500">
+          runs the real generation + evaluation pipeline against every dataset record
+        </span>
+      }
+    >
+      <div className="flex flex-wrap items-end gap-2 text-xs">
+        <Field label="Name">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. flash-vs-pro"
+            className="w-36 rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 placeholder:text-base-500"
+          />
+        </Field>
+        <Field label="Model">
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="mock:sentinel-flash"
+            className="w-40 rounded border border-base-600 bg-base-800 px-2 py-1.5 font-mono text-base-200 placeholder:text-base-500"
+          />
+        </Field>
+        <Field label="Prompt ID">
+          <input
+            value={promptId}
+            onChange={(e) => setPromptId(e.target.value)}
+            placeholder="support-answer"
+            className="w-32 rounded border border-base-600 bg-base-800 px-2 py-1.5 font-mono text-base-200 placeholder:text-base-500"
+          />
+        </Field>
+        <Field label="Version">
+          <input
+            value={promptVersion}
+            onChange={(e) => setPromptVersion(e.target.value)}
+            className="w-14 rounded border border-base-600 bg-base-800 px-2 py-1.5 font-mono text-base-200"
+          />
+        </Field>
+        <Field label="Dataset ID">
+          <input
+            value={datasetId}
+            onChange={(e) => setDatasetId(e.target.value)}
+            placeholder="from /datasets"
+            className="w-40 rounded border border-base-600 bg-base-800 px-2 py-1.5 font-mono text-base-200 placeholder:text-base-500"
+          />
+        </Field>
+        <button
+          type="button"
+          onClick={handleRun}
+          disabled={running || !name.trim() || !model.trim() || !promptId.trim() || !datasetId.trim()}
+          className="rounded border border-base-600 bg-base-800 px-3 py-1.5 text-base-200 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          {running ? "Running…" : "Run"}
+        </button>
+      </div>
+      {runError && <p className="mt-2 text-xs text-red-400">{runError}</p>}
+    </Panel>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block text-[10px] uppercase tracking-wide text-base-500">
+      {label}
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+
+function DetailedComparisonPanel({ idA, idB }: { idA: string; idB: string }) {
+  const { data, loading, error } = useFetch(() => api.compareExperiments(idA, idB), [idA, idB]);
+
+  return (
+    <Panel title="Metric-by-metric verdict" action={<span className="text-[10px] text-base-500">computed server-side</span>}>
+      {error && <ErrorState message={error} />}
+      {!error && (loading || !data) && <SkeletonTable rows={6} cols={5} />}
+      {!error && data && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left text-base-500">
+              <th className="pb-2">Metric</th>
+              <th className="pb-2 text-right">{data.experiment_a.name}</th>
+              <th className="pb-2 text-right">{data.experiment_b.name}</th>
+              <th className="pb-2 text-right">Δ</th>
+              <th className="pb-2 text-right">Winner</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.metrics.map((m) => (
+              <tr key={m.metric_name} className="border-t border-base-800">
+                <td className="py-1.5 font-mono text-base-300">{m.metric_name}</td>
+                <td className="py-1.5 text-right font-mono">{m.value_a.toFixed(4)}</td>
+                <td className="py-1.5 text-right font-mono">{m.value_b.toFixed(4)}</td>
+                <td className="py-1.5 text-right font-mono text-base-400">
+                  {m.delta_pct !== null ? `${m.delta_pct > 0 ? "+" : ""}${m.delta_pct.toFixed(1)}%` : "—"}
+                </td>
+                <td className="py-1.5 text-right">
+                  <StatusBadge
+                    status={m.better === "tie" ? "tie" : m.better === "a" ? data.experiment_a.name : data.experiment_b.name}
+                    tone={m.better === "tie" ? "neutral" : "ok"}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Panel>
   );
 }

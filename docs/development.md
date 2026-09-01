@@ -51,6 +51,17 @@ fixtures in [`tests/conftest.py`](../tests/conftest.py) (a fresh in-memory
 SQLite database per test, via `StaticPool` so the whole test shares one
 connection).
 
+**Coverage measurement note:** `pyproject.toml`'s `[tool.coverage.run]` sets
+`concurrency = ["greenlet", "thread"]`. Without it, coverage.py's tracer
+doesn't follow execution across SQLAlchemy's async-to-sync `greenlet_spawn`
+bridge, so every DB-query-heavy async function under-reports coverage by
+30-50 points even when tests genuinely exercise it line-by-line (this was
+caught by noticing `services/experiments.py` show 49% covered immediately
+after writing 6 passing tests that clearly exercised its full body — the
+tests were fine, the measurement wasn't). If you ever see a suspiciously low
+coverage number on an `async def` that queries the database, check this
+setting before assuming the test is weak.
+
 ## Linting and type checking
 
 ```bash

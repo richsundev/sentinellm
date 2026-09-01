@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,8 +8,10 @@ from sentinellm.api.deps import RequireRead, RequireWrite, get_db
 from sentinellm.api.schemas.common import Page
 from sentinellm.api.schemas.dataset import DatasetCreate, DatasetOut, DatasetRecordOut
 from sentinellm.db.models import Dataset, DatasetRecord
+from sentinellm.services.dataset_import import DatasetImportError, parse_dataset_file
 
 router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
+_MAX_IMPORT_BYTES = 5 * 1024 * 1024
 
 
 async def _to_out(db: AsyncSession, row: Dataset) -> DatasetOut:
@@ -41,6 +43,51 @@ async def create_dataset(payload: DatasetCreate, db: AsyncSession = Depends(get_
             record_metadata=r.metadata,
         )
         for r in payload.records
+    ]
+    db.add(dataset)
+    await db.flush()
+    return await _to_out(db, dataset)
+
+
+@router.post(
+    "/import",
+    response_model=DatasetOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(RequireWrite)],
+)
+async def import_dataset(
+    name: str = Form(...),
+    version: str = Form(...),
+    description: str | None = Form(default=None),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> DatasetOut:
+    """Bulk dataset creation from an uploaded `.jsonl` or `.csv` file — the
+    file-based counterpart to `POST /datasets`' inline JSON records, for
+    importing an existing benchmark set instead of hand-typing it.
+    """
+    raw = await file.read()
+    if len(raw) > _MAX_IMPORT_BYTES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "file exceeds the 5MB import limit")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"file is not valid UTF-8: {exc}") from exc
+
+    try:
+        records = parse_dataset_file(file.filename or "", text)
+    except DatasetImportError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    dataset = Dataset(name=name, version=version, description=description)
+    dataset.records = [
+        DatasetRecord(
+            question=r.question,
+            context=r.context,
+            expected_answer=r.expected_answer,
+            record_metadata=r.metadata,
+        )
+        for r in records
     ]
     db.add(dataset)
     await db.flush()

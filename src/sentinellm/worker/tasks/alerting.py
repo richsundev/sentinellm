@@ -1,10 +1,17 @@
 """Alert rule evaluation over a recent rolling window, with webhook
 notification and dedup so a persistently-breached threshold doesn't spam a
 new alert every poll cycle.
+
+Rule *thresholds* are configurable at runtime (the `alert_rules` table,
+editable from the Settings page / `PATCH /api/v1/alerts/rules/{rule}`)
+rather than fixed at the env-var values in `Settings` — those env vars now
+serve only as the seed value the first time a rule is created, via
+`ensure_default_alert_rules`.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -13,12 +20,94 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.core.config import get_settings
 from sentinellm.core.logging import get_logger
-from sentinellm.db.models import Alert, Evaluation, Trace
+from sentinellm.db.models import Alert, AlertRuleConfig, Evaluation, Trace
 
 logger = get_logger(__name__)
 
 _WINDOW = timedelta(hours=1)
 _DEDUPE_WINDOW = timedelta(hours=1)
+
+
+@dataclass(frozen=True, slots=True)
+class RuleDefinition:
+    rule: str
+    default_threshold_attr: str
+    severity: str
+    service: str
+    direction: str  # "above" | "below" — which side of the threshold fires
+    description: str
+
+
+RULE_DEFINITIONS: list[RuleDefinition] = [
+    RuleDefinition(
+        "error_rate",
+        "error_rate_threshold",
+        "high",
+        "sentinel-api",
+        "above",
+        "Fraction of requests returning an error status in the trailing 1h window.",
+    ),
+    RuleDefinition(
+        "p95_latency",
+        "p95_latency_threshold_ms",
+        "medium",
+        "sentinel-api",
+        "above",
+        "P95 end-to-end request latency (ms) in the trailing 1h window.",
+    ),
+    RuleDefinition(
+        "daily_cost",
+        "daily_cost_budget",
+        "medium",
+        "sentinel-router",
+        "above",
+        "Total estimated LLM spend (USD) in the trailing 1h window.",
+    ),
+    RuleDefinition(
+        "quality_score",
+        "quality_score_threshold",
+        "high",
+        "sentinel-evaluator",
+        "below",
+        "Average overall_quality across evaluated traces in the trailing 1h window.",
+    ),
+    RuleDefinition(
+        "hallucination_rate",
+        "hallucination_rate_threshold",
+        "critical",
+        "sentinel-evaluator",
+        "above",
+        "Average hallucination_score across evaluated traces in the trailing 1h window.",
+    ),
+]
+_DEFINITIONS_BY_RULE = {d.rule: d for d in RULE_DEFINITIONS}
+
+
+async def ensure_default_alert_rules(session: AsyncSession) -> list[AlertRuleConfig]:
+    """Idempotently creates any `AlertRuleConfig` row that doesn't exist yet,
+    seeded from the current `Settings` values. Safe to call on every
+    evaluation pass — a fresh install (or a freshly-added rule definition)
+    gets sane defaults with zero manual setup, and existing operator-edited
+    thresholds are never touched.
+    """
+    settings = get_settings()
+    existing = {r.rule for r in (await session.execute(select(AlertRuleConfig))).scalars().all()}
+    created: list[AlertRuleConfig] = []
+    for definition in RULE_DEFINITIONS:
+        if definition.rule in existing:
+            continue
+        row = AlertRuleConfig(
+            rule=definition.rule,
+            threshold=getattr(settings, definition.default_threshold_attr),
+            severity=definition.severity,
+            enabled=True,
+            description=definition.description,
+        )
+        session.add(row)
+        created.append(row)
+    if created:
+        await session.commit()
+    return created
 
 
 async def _already_alerted(session: AsyncSession, rule: str) -> bool:
@@ -69,61 +158,23 @@ async def _fire(
 
 
 async def evaluate_alert_rules(session: AsyncSession) -> list[Alert]:
-    settings = get_settings()
+    await ensure_default_alert_rules(session)
+    rule_configs = {
+        r.rule: r for r in (await session.execute(select(AlertRuleConfig))).scalars().all()
+    }
+
     since = datetime.now(UTC) - _WINDOW
     traces = (await session.execute(select(Trace).where(Trace.created_at >= since))).scalars().all()
     fired: list[Alert] = []
     if not traces:
         return fired
 
-    error_rate = sum(1 for t in traces if t.status == "error") / len(traces)
-    if error_rate > settings.error_rate_threshold and not await _already_alerted(
-        session, "error_rate"
-    ):
-        fired.append(
-            await _fire(
-                session,
-                "error_rate",
-                error_rate,
-                settings.error_rate_threshold,
-                "high",
-                "sentinel-api",
-                None,
-            )
-        )
-
+    current_values: dict[str, float] = {
+        "error_rate": sum(1 for t in traces if t.status == "error") / len(traces),
+        "daily_cost": sum(t.estimated_cost for t in traces),
+    }
     latencies = sorted(t.latency_ms for t in traces)
-    p95 = latencies[min(len(latencies) - 1, int(0.95 * len(latencies)))]
-    if p95 > settings.p95_latency_threshold_ms and not await _already_alerted(
-        session, "p95_latency"
-    ):
-        fired.append(
-            await _fire(
-                session,
-                "p95_latency",
-                p95,
-                settings.p95_latency_threshold_ms,
-                "medium",
-                "sentinel-api",
-                None,
-            )
-        )
-
-    daily_cost = sum(t.estimated_cost for t in traces)
-    if daily_cost > settings.daily_cost_budget and not await _already_alerted(
-        session, "daily_cost"
-    ):
-        fired.append(
-            await _fire(
-                session,
-                "daily_cost",
-                daily_cost,
-                settings.daily_cost_budget,
-                "medium",
-                "sentinel-router",
-                None,
-            )
-        )
+    current_values["p95_latency"] = latencies[min(len(latencies) - 1, int(0.95 * len(latencies)))]
 
     trace_ids = [t.id for t in traces]
     evaluations = (
@@ -132,37 +183,38 @@ async def evaluate_alert_rules(session: AsyncSession) -> list[Alert]:
         .all()
     )
     if evaluations:
-        avg_quality = sum(e.overall_quality for e in evaluations) / len(evaluations)
-        if avg_quality < settings.quality_score_threshold and not await _already_alerted(
-            session, "quality_score"
-        ):
-            fired.append(
-                await _fire(
-                    session,
-                    "quality_score",
-                    avg_quality,
-                    settings.quality_score_threshold,
-                    "high",
-                    "sentinel-evaluator",
-                    None,
-                )
-            )
+        current_values["quality_score"] = sum(e.overall_quality for e in evaluations) / len(
+            evaluations
+        )
+        current_values["hallucination_rate"] = sum(
+            e.hallucination_score for e in evaluations
+        ) / len(evaluations)
 
-        avg_hallucination = sum(e.hallucination_score for e in evaluations) / len(evaluations)
-        if avg_hallucination > settings.hallucination_rate_threshold and not await _already_alerted(
-            session, "hallucination_rate"
-        ):
-            fired.append(
-                await _fire(
-                    session,
-                    "hallucination_rate",
-                    avg_hallucination,
-                    settings.hallucination_rate_threshold,
-                    "critical",
-                    "sentinel-evaluator",
-                    None,
-                )
+    for rule_name, current in current_values.items():
+        config = rule_configs.get(rule_name)
+        definition = _DEFINITIONS_BY_RULE[rule_name]
+        if config is None or not config.enabled:
+            continue
+
+        breached = (
+            current > config.threshold
+            if definition.direction == "above"
+            else current < config.threshold
+        )
+        if not breached or await _already_alerted(session, rule_name):
+            continue
+
+        fired.append(
+            await _fire(
+                session,
+                rule_name,
+                current,
+                config.threshold,
+                config.severity,
+                definition.service,
+                None,
             )
+        )
 
     if fired:
         await session.commit()
