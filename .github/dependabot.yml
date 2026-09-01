@@ -1,0 +1,36 @@
+# Automated dependency update PRs. Directly motivated by a real incident:
+# the frontend shipped on Next.js 14.2.15 for a while with a critical DoS
+# advisory and several high-severity transitive vulnerabilities that only
+# surfaced when `security.yml` ran `npm audit` — Dependabot catches this
+# proactively instead of waiting for a CI run against stale dependencies.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      next-and-eslint:
+        patterns: ["next", "eslint*", "@next/*"]
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/infrastructure/docker"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

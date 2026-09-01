@@ -1,0 +1,38 @@
+# Fast, local safety net before a commit reaches CI. Deliberately does NOT
+# include mypy: the well-known mypy pre-commit hook runs in an isolated
+# mirror environment that has to duplicate this project's dependencies
+# (SQLAlchemy/Pydantic plugins included) to type-check correctly, which
+# drifts from pyproject.toml and is slow enough to defeat the point of a
+# pre-commit hook. mypy stays a CI/`make lint` check, run against the real
+# project venv.
+#
+# Setup: `pip install pre-commit && pre-commit install` (one-time, in your
+# venv). Runs automatically on `git commit`; `pre-commit run --all-files` to
+# check everything on demand.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Kept in sync with the `ruff` version pyproject.toml resolves to
+    # (`.venv/bin/ruff --version`) so pre-commit and `make lint`/CI agree.
+    rev: v0.16.5
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(src|tests|scripts)/
+      - id: ruff-format
+        files: ^(src|tests|scripts)/
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # infrastructure/kubernetes/*.yaml intentionally bundle multiple
+        # `---`-separated documents (Deployment + Service + HPA) per file.
+        args: [--allow-multiple-documents]
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: check-merge-conflict
+      - id: detect-private-key

@@ -39,4 +39,11 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# Node (not curl/wget) since it's guaranteed present in this image and the
+# page renders its shell server-side regardless of whether the API backend
+# is reachable (data fetching happens client-side), so this only fails if
+# the Next.js server itself is actually down.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
+    CMD node -e "require('http').get('http://localhost:3000/overview', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
 CMD ["node", "server.js"]
