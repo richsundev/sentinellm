@@ -1,0 +1,43 @@
+# Applies to the root build context used by infrastructure/docker/{api,worker}.Dockerfile.
+# Without this, `docker build` ships the entire repo (including .venv and
+# frontend/node_modules — hundreds of MB neither Dockerfile ever COPYs) to
+# the daemon on every build.
+
+.git
+.github
+
+# Python
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.db
+*.sqlite3
+
+# Frontend (irrelevant to the api/worker images; has its own .dockerignore)
+frontend/node_modules
+frontend/.next
+frontend/coverage
+
+# Docs / non-runtime content
+# NOTE: README.md is NOT excluded — the hatchling build in pyproject.toml
+# reads it (`COPY pyproject.toml README.md ./` in both Dockerfiles).
+docs
+tests
+infrastructure/kubernetes
+infrastructure/monitoring
+CHANGELOG.md
+.env
+.env.example
+
+# OS / IDE
+.DS_Store
+.vscode
+.idea

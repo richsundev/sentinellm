@@ -3,8 +3,9 @@
 The SDK is intentionally the *only* thing an integrating application needs
 to depend on — it never imports from `sentinellm.db`, `sentinellm.llm`, etc.
 It talks to the platform purely over its public HTTP API, exactly like any
-external caller would, which is also why it doubles as the integration test
-surface for the API's ingestion contract (see tests/api/test_sdk_client.py).
+external caller would, which is what lets its request-shape contract be
+verified with an HTTP-level mock rather than a running server (see
+tests/unit/test_sdk_client.py).
 
 Usage:
 

@@ -18,7 +18,9 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          # pinned by digest — re-resolve with
+          # `docker pull postgres:16-alpine && docker inspect --format='{{index .RepoDigests 0}}' postgres:16-alpine`
+          image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
           ports: [{ containerPort: 5432 }]
           env:
             - name: POSTGRES_USER

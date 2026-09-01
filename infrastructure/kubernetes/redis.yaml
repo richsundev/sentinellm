@@ -16,7 +16,9 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:7-alpine
+          # pinned by digest — re-resolve with
+          # `docker pull redis:7-alpine && docker inspect --format='{{index .RepoDigests 0}}' redis:7-alpine`
+          image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
           ports: [{ containerPort: 6379 }]
           readinessProbe:
             exec: { command: ["redis-cli", "ping"] }

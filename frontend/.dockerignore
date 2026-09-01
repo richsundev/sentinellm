@@ -1,0 +1,16 @@
+# Applies to the build context used by frontend/Dockerfile (context: ./frontend).
+# Excluding node_modules matters for correctness, not just speed: without
+# this, `COPY . .` in the builder stage would overwrite the image's freshly
+# `npm install`-ed node_modules with whatever happens to be on the host
+# (wrong platform's native binaries, stale lockfile state, etc.).
+
+node_modules
+.next
+out
+coverage
+.git
+.swc
+*.tsbuildinfo
+npm-debug.log*
+.env*.local
+.DS_Store
