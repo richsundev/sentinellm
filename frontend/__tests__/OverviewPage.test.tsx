@@ -43,6 +43,8 @@ describe("OverviewPage (smoke test)", () => {
         timeseries: [
           { timestamp: "2026-08-31T00:00:00Z", volume: 10, p95_latency_ms: 400, cost: 1.2 },
         ],
+        human_feedback_count: 5,
+        human_judge_agreement_rate: 0.8,
       }),
     });
 

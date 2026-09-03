@@ -92,7 +92,7 @@ def create_app() -> FastAPI:
 async def _validation_error_handler(_request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": exc.errors()}
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": exc.errors()}
     )
 
 

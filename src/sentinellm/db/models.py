@@ -108,6 +108,9 @@ class Trace(Base, TimestampMixin):
     routing_decision: Mapped[RoutingDecision | None] = relationship(
         back_populates="trace", cascade="all, delete-orphan", uselist=False
     )
+    feedback: Mapped[TraceFeedback | None] = relationship(
+        back_populates="trace", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class TraceSpan(Base):
@@ -248,6 +251,29 @@ class RoutingDecision(Base, TimestampMixin):
     risk_level: Mapped[str] = mapped_column(String(20), default="low")
 
     trace: Mapped[Trace] = relationship(back_populates="routing_decision")
+
+    @property
+    def public_trace_id(self) -> str:
+        return self.trace.trace_id if self.trace is not None else self.trace_id
+
+
+class TraceFeedback(Base, TimestampMixin):
+    """A human reviewer's verdict on one trace — thumbs up/down + an optional
+    note. One row per trace (upserted by the API, not appended), so this
+    records a reviewer's *current* judgment rather than a full history of
+    every reviewer's opinion — the simpler model, since the platform doesn't
+    yet have multi-reviewer identity to disambiguate against.
+    """
+
+    __tablename__ = "trace_feedback"
+    __table_args__ = (UniqueConstraint("trace_id", name="uq_trace_feedback_trace_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    trace_id: Mapped[str] = mapped_column(ForeignKey("traces.id"), nullable=False)
+    rating: Mapped[str] = mapped_column(String(10), nullable=False)  # "up" | "down"
+    note: Mapped[str | None] = mapped_column(Text, default=None)
+
+    trace: Mapped[Trace] = relationship(back_populates="feedback")
 
     @property
     def public_trace_id(self) -> str:

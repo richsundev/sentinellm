@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sentinellm.api.deps import RequireRead, RequireWrite, get_db
 from sentinellm.api.schemas.common import Page
-from sentinellm.api.schemas.trace import TraceCreate, TraceOut
+from sentinellm.api.schemas.trace import TraceCreate, TraceFeedbackIn, TraceFeedbackOut, TraceOut
 from sentinellm.core.config import get_settings
 from sentinellm.core.ids import new_request_id, new_trace_id
 from sentinellm.core.logging import get_logger
 from sentinellm.core.queue import enqueue_evaluation
-from sentinellm.db.models import Evaluation, Trace, TraceSpan
+from sentinellm.db.models import Evaluation, Trace, TraceFeedback, TraceSpan
 from sentinellm.pricing.calculator import calculate_cost
 from sentinellm.security.pii import redact_pii
 
@@ -24,6 +24,7 @@ _LOAD_OPTS = (
     selectinload(Trace.evaluation).selectinload(Evaluation.metrics),
     selectinload(Trace.evaluation).selectinload(Evaluation.claims),
     selectinload(Trace.routing_decision),
+    selectinload(Trace.feedback),
 )
 
 
@@ -89,12 +90,14 @@ async def ingest_trace(payload: TraceCreate, db: AsyncSession = Depends(get_db))
         )
         for s in payload.spans
     ]
-    # Ingestion never attaches an evaluation or routing decision inline (those
-    # are produced later, by the worker and by /generate respectively).
-    # Assigning None explicitly marks the relationship as loaded so Pydantic's
-    # from_attributes read below doesn't trigger an async lazy-load.
+    # Ingestion never attaches an evaluation, routing decision, or feedback
+    # inline (those are produced later, by the worker, /generate, and a
+    # reviewer respectively). Assigning None explicitly marks each
+    # relationship as loaded so Pydantic's from_attributes read below
+    # doesn't trigger an async lazy-load.
     trace.evaluation = None
     trace.routing_decision = None
+    trace.feedback = None
     db.add(trace)
     await db.flush()
 
@@ -117,6 +120,9 @@ async def list_traces(
     application_id: str | None = None,
     environment: str | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
+    q: str | None = Query(
+        default=None, description="Case-insensitive substring match over prompt + response"
+    ),
 ) -> Page[TraceOut]:
     stmt = select(Trace)
     count_stmt = select(func.count()).select_from(Trace)
@@ -130,6 +136,11 @@ async def list_traces(
         if value:
             stmt = stmt.where(column == value)
             count_stmt = count_stmt.where(column == value)
+
+    if q:
+        search_clause = or_(Trace.prompt.ilike(f"%{q}%"), Trace.response.ilike(f"%{q}%"))
+        stmt = stmt.where(search_clause)
+        count_stmt = count_stmt.where(search_clause)
 
     total = (await db.execute(count_stmt)).scalar_one()
     stmt = stmt.options(*_LOAD_OPTS).order_by(Trace.created_at.desc()).limit(limit).offset(offset)
@@ -146,3 +157,32 @@ async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)) -> TraceO
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
     return TraceOut.model_validate(row)
+
+
+@router.post(
+    "/{trace_id}/feedback",
+    response_model=TraceFeedbackOut,
+    dependencies=[Depends(RequireWrite)],
+)
+async def submit_trace_feedback(
+    trace_id: str, payload: TraceFeedbackIn, db: AsyncSession = Depends(get_db)
+) -> TraceFeedbackOut:
+    """Upserts a human reviewer's verdict on a trace — one row per trace,
+    not a history, so re-submitting overwrites the previous rating/note
+    rather than appending another entry (see `TraceFeedback` docstring).
+    """
+    trace_stmt = (
+        select(Trace).where(Trace.trace_id == trace_id).options(selectinload(Trace.feedback))
+    )
+    trace = (await db.execute(trace_stmt)).unique().scalar_one_or_none()
+    if trace is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
+
+    if trace.feedback is not None:
+        trace.feedback.rating = payload.rating
+        trace.feedback.note = payload.note
+    else:
+        trace.feedback = TraceFeedback(rating=payload.rating, note=payload.note)
+
+    await db.flush()
+    return TraceFeedbackOut.model_validate(trace.feedback)

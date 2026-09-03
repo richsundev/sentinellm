@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { useParams } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -11,7 +12,12 @@ import { JsonViewer } from "@/components/JsonViewer";
 import { ErrorState, Skeleton } from "@/components/StateViews";
 import { DataTable, type Column } from "@/components/DataTable";
 import { formatCost, formatDate, formatMs } from "@/lib/format";
-import type { HallucinationClaim, RoutingCandidate } from "@/lib/types";
+import type {
+  FeedbackRating,
+  HallucinationClaim,
+  RoutingCandidate,
+  TraceFeedback,
+} from "@/lib/types";
 
 export default function TraceDetailPage() {
   const params = useParams<{ id: string }>();
@@ -209,6 +215,8 @@ export default function TraceDetailPage() {
         )}
       </Panel>
 
+      <ReviewerFeedbackPanel traceId={trace.trace_id} current={trace.feedback} onSubmitted={refetch} />
+
       <Panel title="Evaluation">
         {!trace.evaluation ? (
           <p className="text-xs text-base-400">No evaluation recorded for this trace.</p>
@@ -287,5 +295,85 @@ function HeaderStat({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] uppercase tracking-wide text-base-400">{label}</div>
       <div className="font-mono text-sm text-base-100">{value}</div>
     </div>
+  );
+}
+
+function ReviewerFeedbackPanel({
+  traceId,
+  current,
+  onSubmitted,
+}: {
+  traceId: string;
+  current: TraceFeedback | null;
+  onSubmitted: () => void;
+}) {
+  const [note, setNote] = useState(current?.note ?? "");
+  const [submitting, setSubmitting] = useState<FeedbackRating | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  async function submit(rating: FeedbackRating) {
+    setSubmitting(rating);
+    setSubmitError(null);
+    try {
+      await api.submitTraceFeedback(traceId, rating, note.trim() || undefined);
+      onSubmitted();
+    } catch (err) {
+      setSubmitError(err instanceof ApiError ? err.message : "Failed to submit feedback");
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  return (
+    <Panel
+      title="Human review"
+      action={
+        current && (
+          <span className="text-[10px] text-base-500">
+            last reviewed {formatDate(current.created_at)}
+          </span>
+        )
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => submit("up")}
+          disabled={submitting !== null}
+          className={
+            current?.rating === "up"
+              ? "rounded border border-ok bg-ok/10 px-3 py-1.5 text-xs text-ok"
+              : "rounded border border-base-600 bg-base-800 px-3 py-1.5 text-xs text-base-300 hover:bg-base-700 disabled:cursor-not-allowed"
+          }
+        >
+          {submitting === "up" ? "Saving…" : "👍 Good answer"}
+        </button>
+        <button
+          type="button"
+          onClick={() => submit("down")}
+          disabled={submitting !== null}
+          className={
+            current?.rating === "down"
+              ? "rounded border border-err bg-err/10 px-3 py-1.5 text-xs text-err"
+              : "rounded border border-base-600 bg-base-800 px-3 py-1.5 text-xs text-base-300 hover:bg-base-700 disabled:cursor-not-allowed"
+          }
+        >
+          {submitting === "down" ? "Saving…" : "👎 Bad answer"}
+        </button>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Optional note"
+          className="min-w-[12rem] flex-1 rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 placeholder:text-base-500"
+        />
+      </div>
+      {current && (
+        <p className="mt-2 text-xs text-base-400">
+          Currently rated <StatusBadge status={current.rating === "up" ? "good" : "bad"} tone={current.rating === "up" ? "ok" : "err"} />
+          {current.note && <span className="ml-2">— &ldquo;{current.note}&rdquo;</span>}
+        </p>
+      )}
+      {submitError && <p className="mt-2 text-xs text-red-400">{submitError}</p>}
+    </Panel>
   );
 }

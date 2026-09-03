@@ -11,14 +11,19 @@ import type {
   Experiment,
   ExperimentComparison,
   ExperimentRunRequest,
+  FeedbackRating,
+  ModelCreateRequest,
   ModelInfo,
+  ModelUpdateRequest,
   OverviewMetrics,
   Paginated,
+  PromptPromotionResult,
   PromptVersion,
   Regression,
   RoutingDecision,
   TimeRange,
   Trace,
+  TraceFeedback,
 } from "./types";
 
 export const API_BASE_URL =
@@ -132,6 +137,7 @@ export type TraceFilters = {
   application_id?: string;
   environment?: string;
   status?: string;
+  q?: string;
 };
 
 export type EvaluationFilters = {
@@ -194,6 +200,26 @@ export const api = {
     mutate<Experiment>("/experiments/run", { method: "POST", body: payload }),
   compareExperiments: (a: string, b: string) =>
     request<ExperimentComparison>("/experiments/compare", { a, b }),
+
+  // Trace feedback (Trace detail page) + search (Traces page).
+  submitTraceFeedback: (traceId: string, rating: FeedbackRating, note?: string) =>
+    mutate<TraceFeedback>(`/traces/${encodeURIComponent(traceId)}/feedback`, {
+      method: "POST",
+      body: { rating, note },
+    }),
+
+  // Prompt promotion gate (Prompts page).
+  promotePromptVersion: (promptId: string, version: number, qualityPassThreshold = 0.7) =>
+    mutate<PromptPromotionResult>(
+      `/prompts/${encodeURIComponent(promptId)}/versions/${version}/promote`,
+      { method: "POST", body: { quality_pass_threshold: qualityPassThreshold } }
+    ),
+
+  // Model catalog management (Models page).
+  createModel: (payload: ModelCreateRequest) =>
+    mutate<ModelInfo>("/models", { method: "POST", body: payload }),
+  updateModel: (modelId: string, payload: ModelUpdateRequest) =>
+    mutate<ModelInfo>(`/models/${encodeURIComponent(modelId)}`, { method: "PATCH", body: payload }),
 };
 
 export type Api = typeof api;

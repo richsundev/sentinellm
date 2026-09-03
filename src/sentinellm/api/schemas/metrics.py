@@ -34,6 +34,8 @@ class OverviewMetricsOut(BaseModel):
     model_usage: list[ModelUsage]
     provider_reliability: list[ProviderReliability]
     timeseries: list[TimeseriesPoint]
+    human_feedback_count: int
+    human_judge_agreement_rate: float | None
 
 
 class DailyCost(BaseModel):

@@ -21,6 +21,7 @@ export default function TracesPage() {
   const [provider, setProvider] = useState("");
   const [applicationId, setApplicationId] = useState("");
   const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
   const [offset, setOffset] = useState(0);
 
   const { data, loading, error, refetch } = useFetch(
@@ -33,8 +34,9 @@ export default function TracesPage() {
         application_id: applicationId || undefined,
         environment: environment === "all" ? undefined : environment,
         status: status || undefined,
+        q: search || undefined,
       }),
-    [model, provider, applicationId, environment, status, offset]
+    [model, provider, applicationId, environment, status, search, offset]
   );
 
   const columns: Column<Trace>[] = [
@@ -121,6 +123,11 @@ export default function TracesPage() {
         status={status}
         onStatusChange={(v) => {
           setStatus(v);
+          setOffset(0);
+        }}
+        search={search}
+        onSearchChange={(v) => {
+          setSearch(v);
           setOffset(0);
         }}
       />

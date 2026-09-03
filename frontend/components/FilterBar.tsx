@@ -9,6 +9,8 @@ export interface FilterBarProps {
   onApplicationIdChange: (v: string) => void;
   status?: string;
   onStatusChange?: (v: string) => void;
+  search?: string;
+  onSearchChange?: (v: string) => void;
 }
 
 export function FilterBar({
@@ -20,6 +22,8 @@ export function FilterBar({
   onApplicationIdChange,
   status,
   onStatusChange,
+  search,
+  onSearchChange,
 }: FilterBarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-base-700 bg-base-850 p-3">
@@ -54,6 +58,14 @@ export function FilterBar({
             <option value="error">error</option>
           </select>
         </label>
+      )}
+      {onSearchChange && (
+        <FilterInput
+          label="Search"
+          value={search ?? ""}
+          onChange={onSearchChange}
+          placeholder="prompt or response text"
+        />
       )}
     </div>
   );

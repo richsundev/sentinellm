@@ -91,8 +91,18 @@ export interface Trace {
   spans: Span[];
   evaluation: Evaluation | null;
   routing_decision: RoutingDecision | null;
+  feedback: TraceFeedback | null;
   cache_hit: boolean;
   similarity_score: number | null;
+}
+
+export type FeedbackRating = "up" | "down";
+
+export interface TraceFeedback {
+  trace_id: string;
+  rating: FeedbackRating;
+  note: string | null;
+  created_at: string;
 }
 
 export type ModelStatus = "healthy" | "degraded" | "down";
@@ -107,6 +117,28 @@ export interface ModelInfo {
   avg_quality: number | null;
   avg_latency_ms: number | null;
   status: ModelStatus;
+}
+
+export interface ModelCreateRequest {
+  id: string;
+  name: string;
+  provider: string;
+  input_price_per_1k: number;
+  output_price_per_1k: number;
+  context_window?: number;
+  quality_tier?: number;
+  avg_latency_ms_prior?: number;
+  status?: ModelStatus;
+}
+
+export interface ModelUpdateRequest {
+  name?: string;
+  input_price_per_1k?: number;
+  output_price_per_1k?: number;
+  context_window?: number;
+  quality_tier?: number;
+  avg_latency_ms_prior?: number;
+  status?: ModelStatus;
 }
 
 export type Severity = "low" | "medium" | "high" | "critical";
@@ -179,6 +211,13 @@ export interface PromptVersion {
   status: PromptStatus;
   author: string;
   created_at: string;
+}
+
+export interface PromptPromotionResult {
+  promoted: PromptVersion;
+  justifying_experiment_id: string;
+  justifying_experiment_pass_rate: number;
+  demoted_version: number | null;
 }
 
 export interface Experiment {
@@ -260,6 +299,8 @@ export interface OverviewMetrics {
     p95_latency_ms: number;
     cost: number;
   }[];
+  human_feedback_count: number;
+  human_judge_agreement_rate: number | null;
 }
 
 export interface CostSummary {

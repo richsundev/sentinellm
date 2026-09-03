@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -15,6 +15,30 @@ export default function PromptsPage() {
     []
   );
   const [selected, setSelected] = useState<PromptVersion | null>(null);
+  const [promoting, setPromoting] = useState(false);
+  const [promoteMessage, setPromoteMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  async function handlePromote() {
+    if (!selected) return;
+    setPromoting(true);
+    setPromoteMessage(null);
+    try {
+      const result = await api.promotePromptVersion(selected.prompt_id, selected.version);
+      setPromoteMessage({
+        kind: "ok",
+        text: `Promoted v${result.promoted.version} to production (justified by experiment ${result.justifying_experiment_id.slice(0, 8)}, pass_rate ${result.justifying_experiment_pass_rate.toFixed(2)})${result.demoted_version ? `; v${result.demoted_version} deprecated` : ""}.`,
+      });
+      setSelected(result.promoted);
+      await refetch();
+    } catch (err) {
+      setPromoteMessage({
+        kind: "err",
+        text: err instanceof ApiError ? err.message : "Promotion failed",
+      });
+    } finally {
+      setPromoting(false);
+    }
+  }
 
   const groups = useMemo(() => {
     if (!data) return [];
@@ -77,6 +101,27 @@ export default function PromptsPage() {
               <div className="text-xs text-base-400">
                 by {selected.author} · {formatDate(selected.created_at)}
               </div>
+              {selected.status !== "production" && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={handlePromote}
+                    disabled={promoting}
+                    className="w-full rounded border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs text-accent hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {promoting ? "Checking evidence…" : "Promote to production"}
+                  </button>
+                  <p className="mt-1 text-[10px] text-base-500">
+                    Requires the latest experiment for this version to have pass_rate ≥ 0.7 —
+                    run one from the Experiments page first.
+                  </p>
+                </div>
+              )}
+              {promoteMessage && (
+                <p className={promoteMessage.kind === "ok" ? "text-xs text-ok" : "text-xs text-err"}>
+                  {promoteMessage.text}
+                </p>
+              )}
               <div>
                 <div className="mb-1 text-[11px] uppercase tracking-wide text-base-400">
                   Variables

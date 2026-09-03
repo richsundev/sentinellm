@@ -302,10 +302,12 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         evaluation_status="pending" if (request.evaluate and status == "ok") else "skipped",
     )
     trace.spans = spans
-    # No evaluation is attached inline — the worker creates it asynchronously.
+    # No evaluation or feedback is attached inline — the worker creates the
+    # former asynchronously, and a human hasn't reviewed this trace yet.
     # Explicit None (rather than leaving the relationship untouched) avoids an
     # async lazy-load when this object is later read back via TraceOut.
     trace.evaluation = None
+    trace.feedback = None
 
     if routing_decision is not None:
         from sentinellm.db.models import RoutingDecision as RoutingDecisionModel

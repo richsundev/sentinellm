@@ -62,6 +62,14 @@ export default function OverviewPage() {
         { label: "Hallucination rate", value: formatPercent(data.hallucination_rate) },
         { label: "Avg faithfulness", value: formatPercent(data.avg_faithfulness) },
         { label: "Avg relevance", value: formatPercent(data.avg_relevance) },
+        {
+          label: "Human/judge agreement",
+          value:
+            data.human_judge_agreement_rate !== null
+              ? formatPercent(data.human_judge_agreement_rate)
+              : "—",
+          sublabel: `${data.human_feedback_count} reviewed`,
+        },
       ]
     : [];
 
@@ -97,11 +105,11 @@ export default function OverviewPage() {
       {!error && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {loading || !data
-            ? Array.from({ length: 10 }).map((_, i) => (
+            ? Array.from({ length: 11 }).map((_, i) => (
                 <MetricCard key={i} label="" value="" loading />
               ))
             : kpis.map((k) => (
-                <MetricCard key={k.label} label={k.label} value={k.value} />
+                <MetricCard key={k.label} label={k.label} value={k.value} sublabel={k.sublabel} />
               ))}
         </div>
       )}

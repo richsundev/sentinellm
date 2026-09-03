@@ -24,7 +24,7 @@ from sentinellm.api.schemas.metrics import (
     ProviderReliability,
     TimeseriesPoint,
 )
-from sentinellm.db.models import Evaluation, EvaluationMetric, Trace
+from sentinellm.db.models import Evaluation, EvaluationMetric, Trace, TraceFeedback
 
 router = APIRouter(prefix="/api/v1/metrics", tags=["metrics"])
 
@@ -36,6 +36,7 @@ _RANGE_TO_DELTA = {
 }
 _SAMPLE_CAP = 5000
 _BUCKET_COUNT = 24
+_HUMAN_AGREEMENT_QUALITY_THRESHOLD = 0.7
 
 
 def _percentile(sorted_values: list[float], p: float) -> float:
@@ -82,6 +83,8 @@ async def overview(
             model_usage=[],
             provider_reliability=[],
             timeseries=[],
+            human_feedback_count=0,
+            human_judge_agreement_rate=None,
         )
 
     latencies = sorted(t.latency_ms for t in traces)
@@ -105,6 +108,25 @@ async def overview(
     faithfulness = [r.score for r in metric_rows if r.metric_name == "faithfulness"]
     relevance = [r.score for r in metric_rows if r.metric_name == "relevance"]
     hallucination_scores = [e.hallucination_score for e in evaluations]
+
+    feedback_rows = (
+        (await db.execute(select(TraceFeedback).where(TraceFeedback.trace_id.in_(trace_ids))))
+        .scalars()
+        .all()
+    )
+    quality_by_trace_id = {e.trace_id: e.overall_quality for e in evaluations}
+    agreements = 0
+    compared = 0
+    for feedback in feedback_rows:
+        quality = quality_by_trace_id.get(feedback.trace_id)
+        if quality is None:
+            continue
+        compared += 1
+        judged_good = quality >= _HUMAN_AGREEMENT_QUALITY_THRESHOLD
+        human_liked = feedback.rating == "up"
+        if judged_good == human_liked:
+            agreements += 1
+    human_judge_agreement_rate = round(agreements / compared, 4) if compared else None
 
     usage: dict[str, int] = {}
     provider_totals: dict[str, list[int]] = {}
@@ -161,6 +183,8 @@ async def overview(
             for p, (ok, total) in provider_totals.items()
         ],
         timeseries=timeseries,
+        human_feedback_count=len(feedback_rows),
+        human_judge_agreement_rate=human_judge_agreement_rate,
     )
 
 

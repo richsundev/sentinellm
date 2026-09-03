@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -105,6 +105,19 @@ class RoutingDecisionOut(BaseModel):
     created_at: datetime
 
 
+class TraceFeedbackIn(BaseModel):
+    rating: Literal["up", "down"]
+    note: str | None = None
+
+
+class TraceFeedbackOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    trace_id: str = Field(validation_alias="public_trace_id")
+    rating: str
+    note: str | None
+    created_at: datetime
+
+
 class TraceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -130,5 +143,6 @@ class TraceOut(BaseModel):
     spans: list[SpanOut] = Field(default_factory=list)
     evaluation: EvaluationOut | None = None
     routing_decision: RoutingDecisionOut | None = None
+    feedback: TraceFeedbackOut | None = None
     cache_hit: bool
     similarity_score: float | None

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   CartesianGrid,
   ResponsiveContainer,
@@ -10,20 +11,32 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
 import { DataTable, type Column } from "@/components/DataTable";
 import { ErrorState, Skeleton, SkeletonTable } from "@/components/StateViews";
-import { StatusBadge } from "@/components/StatusBadge";
-import type { ModelInfo } from "@/lib/types";
+import type { ModelInfo, ModelStatus } from "@/lib/types";
 import { formatMs, formatPercent } from "@/lib/format";
+
+const STATUS_OPTIONS: ModelStatus[] = ["healthy", "degraded", "down"];
 
 export default function ModelsPage() {
   const { data, loading, error, refetch } = useFetch(
     () => api.listModels({ limit: 200 }),
     []
   );
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  async function handleStatusChange(modelId: string, status: ModelStatus) {
+    setUpdatingId(modelId);
+    try {
+      await api.updateModel(modelId, { status });
+      await refetch();
+    } finally {
+      setUpdatingId(null);
+    }
+  }
 
   const columns: Column<ModelInfo>[] = [
     {
@@ -76,7 +89,21 @@ export default function ModelsPage() {
     {
       key: "status",
       header: "Status",
-      render: (m) => <StatusBadge status={m.status} />,
+      render: (m) => (
+        <select
+          value={m.status}
+          disabled={updatingId === m.id}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => handleStatusChange(m.id, e.target.value as ModelStatus)}
+          className="rounded border border-base-600 bg-base-800 px-1.5 py-0.5 text-[11px] text-base-200 disabled:cursor-not-allowed"
+        >
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      ),
       sortValue: (m) => m.status,
     },
   ];
@@ -92,6 +119,8 @@ export default function ModelsPage() {
 
   return (
     <div className="space-y-4">
+      <RegisterModelPanel onCreated={refetch} />
+
       {error && <ErrorState message={error} onRetry={refetch} />}
 
       {!error && (
@@ -160,5 +189,96 @@ function ScatterTooltip({
       <div className="text-base-400">quality: {p.quality.toFixed(1)}%</div>
       <div className="text-base-400">latency: {p.latency.toFixed(0)}ms</div>
     </div>
+  );
+}
+
+function RegisterModelPanel({ onCreated }: { onCreated: () => void }) {
+  const [id, setId] = useState("");
+  const [name, setName] = useState("");
+  const [provider, setProvider] = useState("");
+  const [inputPrice, setInputPrice] = useState("");
+  const [outputPrice, setOutputPrice] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const canSubmit = id.trim() && name.trim() && provider.trim() && inputPrice !== "" && outputPrice !== "";
+
+  async function handleCreate() {
+    if (!canSubmit) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await api.createModel({
+        id: id.trim(),
+        name: name.trim(),
+        provider: provider.trim(),
+        input_price_per_1k: Number(inputPrice),
+        output_price_per_1k: Number(outputPrice),
+      });
+      setId("");
+      setName("");
+      setProvider("");
+      setInputPrice("");
+      setOutputPrice("");
+      onCreated();
+    } catch (err) {
+      setCreateError(err instanceof ApiError ? err.message : "Failed to register model");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Register a model"
+      action={<span className="text-[10px] text-base-500">adds it to the router&apos;s candidate pool + pricing catalog</span>}
+    >
+      <div className="flex flex-wrap items-end gap-2 text-xs">
+        <LabeledInput label="ID" value={id} onChange={setId} placeholder="openai:gpt-4o-mini" mono />
+        <LabeledInput label="Name" value={name} onChange={setName} placeholder="gpt-4o-mini" />
+        <LabeledInput label="Provider" value={provider} onChange={setProvider} placeholder="openai" />
+        <LabeledInput label="In $/1K" value={inputPrice} onChange={setInputPrice} placeholder="0.00015" width="w-24" />
+        <LabeledInput label="Out $/1K" value={outputPrice} onChange={setOutputPrice} placeholder="0.0006" width="w-24" />
+        <button
+          type="button"
+          onClick={handleCreate}
+          disabled={!canSubmit || creating}
+          className="rounded border border-base-600 bg-base-800 px-3 py-1.5 text-base-200 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          {creating ? "Registering…" : "Register"}
+        </button>
+      </div>
+      {createError && <p className="mt-2 text-xs text-red-400">{createError}</p>}
+    </Panel>
+  );
+}
+
+function LabeledInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+  mono,
+  width = "w-36",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  mono?: boolean;
+  width?: string;
+}) {
+  return (
+    <label className="block text-[10px] uppercase tracking-wide text-base-500">
+      {label}
+      <div className="mt-1">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={`${width} rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 placeholder:text-base-500 ${mono ? "font-mono" : ""}`}
+        />
+      </div>
+    </label>
   );
 }

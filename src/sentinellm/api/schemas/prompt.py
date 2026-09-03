@@ -30,3 +30,14 @@ class PromptVersionOut(BaseModel):
     status: str
     author: str
     created_at: datetime
+
+
+class PromptPromoteRequest(BaseModel):
+    quality_pass_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class PromptPromotionOut(BaseModel):
+    promoted: PromptVersionOut
+    justifying_experiment_id: str
+    justifying_experiment_pass_rate: float
+    demoted_version: int | None

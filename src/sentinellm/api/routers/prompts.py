@@ -6,8 +6,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.api.deps import RequireRead, RequireWrite, get_db
 from sentinellm.api.schemas.common import Page
-from sentinellm.api.schemas.prompt import PromptStatusUpdate, PromptVersionCreate, PromptVersionOut
+from sentinellm.api.schemas.prompt import (
+    PromptPromoteRequest,
+    PromptPromotionOut,
+    PromptStatusUpdate,
+    PromptVersionCreate,
+    PromptVersionOut,
+)
 from sentinellm.db.models import PromptVersion
+from sentinellm.services.prompts import (
+    PromotionGateError,
+    PromptNotFoundError,
+    promote_prompt_version,
+)
 
 router = APIRouter(prefix="/api/v1/prompts", tags=["prompts"])
 
@@ -89,3 +100,33 @@ async def update_prompt_status(
     row.status = payload.status
     await db.flush()
     return PromptVersionOut.model_validate(row)
+
+
+@router.post(
+    "/{prompt_id}/versions/{version}/promote",
+    response_model=PromptPromotionOut,
+    dependencies=[Depends(RequireWrite)],
+)
+async def promote_prompt_version_endpoint(
+    prompt_id: str, version: int, payload: PromptPromoteRequest, db: AsyncSession = Depends(get_db)
+) -> PromptPromotionOut:
+    """Evidence-gated promotion: requires the latest experiment run for this
+    exact prompt version to have `pass_rate >= quality_pass_threshold`, and
+    demotes whatever was previously `production` for this `prompt_id`. See
+    `services/prompts.py` for the full rationale.
+    """
+    try:
+        result = await promote_prompt_version(
+            db, prompt_id, version, payload.quality_pass_threshold
+        )
+    except PromptNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except PromotionGateError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    return PromptPromotionOut(
+        promoted=PromptVersionOut.model_validate(result.promoted),
+        justifying_experiment_id=result.justifying_experiment.id,
+        justifying_experiment_pass_rate=result.justifying_experiment.pass_rate,
+        demoted_version=result.demoted_version,
+    )
