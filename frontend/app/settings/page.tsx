@@ -7,12 +7,13 @@ import { Panel } from "@/components/Panel";
 import { DataTable, type Column } from "@/components/DataTable";
 import { ErrorState, SkeletonTable } from "@/components/StateViews";
 import { StatusBadge } from "@/components/StatusBadge";
-import type { Alert, AlertRule, ApiKey } from "@/lib/types";
+import type { Alert, AlertRule, ApiKey, Application } from "@/lib/types";
 import { formatDate } from "@/lib/format";
 
 export default function SettingsPage() {
   return (
     <div className="space-y-6">
+      <ApplicationsPanel />
       <ApiKeysPanel />
       <AlertRulesPanel />
       <RecentAlertsPanel />
@@ -28,6 +29,135 @@ export default function SettingsPage() {
         </p>
       </Panel>
     </div>
+  );
+}
+
+function ApplicationsPanel() {
+  const { data: apps, loading, error, refetch } = useFetch(() => api.listApplications(), []);
+  const [name, setName] = useState("");
+  const [budget, setBudget] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  async function handleCreate() {
+    if (!name.trim()) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await api.createApplication({
+        name: name.trim(),
+        daily_cost_budget: budget ? Number(budget) : undefined,
+      });
+      setName("");
+      setBudget("");
+      await refetch();
+    } catch (err) {
+      setCreateError(err instanceof ApiError ? err.message : "Failed to create application");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleBudgetChange(app: Application, value: string) {
+    setSavingId(app.id);
+    try {
+      await api.updateApplication(app.id, {
+        daily_cost_budget: value ? Number(value) : undefined,
+      });
+      await refetch();
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  const columns: Column<Application>[] = [
+    { key: "name", header: "Name", render: (a) => <span className="text-base-200">{a.name}</span> },
+    {
+      key: "description",
+      header: "Description",
+      render: (a) => <span className="text-base-400">{a.description ?? "—"}</span>,
+    },
+    {
+      key: "daily_cost_budget",
+      header: "Daily cost budget",
+      render: (a) => (
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          defaultValue={a.daily_cost_budget ?? ""}
+          disabled={savingId === a.id}
+          onBlur={(e) => {
+            if (e.target.value !== String(a.daily_cost_budget ?? "")) {
+              void handleBudgetChange(a, e.target.value);
+            }
+          }}
+          placeholder="no budget"
+          className="w-24 rounded border border-base-600 bg-base-800 px-2 py-1 text-xs text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
+        />
+      ),
+      sortValue: (a) => a.daily_cost_budget ?? -1,
+    },
+    {
+      key: "created_at",
+      header: "Created",
+      render: (a) => <span className="font-mono text-xs text-base-500">{formatDate(a.created_at)}</span>,
+      sortValue: (a) => a.created_at,
+    },
+  ];
+
+  return (
+    <Panel
+      title="Applications"
+      action={
+        <span className="text-[10px] text-base-500">
+          set a daily cost budget to alert when an application overspends
+        </span>
+      }
+    >
+      {error && <ErrorState message={error} onRetry={refetch} />}
+      {!error && (loading || !apps) && <SkeletonTable rows={2} cols={4} />}
+      {!error && apps && (
+        <DataTable<Application>
+          columns={columns}
+          rows={apps.items}
+          rowKey={(a) => a.id}
+          emptyTitle="No applications"
+          emptyMessage="Create one below to get started."
+          defaultSortKey="name"
+        />
+      )}
+
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Application name"
+          disabled={creating}
+          className="rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
+        />
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          value={budget}
+          onChange={(e) => setBudget(e.target.value)}
+          placeholder="Budget (optional)"
+          disabled={creating}
+          className="w-32 rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
+        />
+        <button
+          type="button"
+          onClick={handleCreate}
+          disabled={!name.trim() || creating}
+          className="rounded border border-base-600 bg-base-800 px-3 py-1.5 text-xs text-base-200 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          {creating ? "Creating…" : "+ Create application"}
+        </button>
+      </div>
+      {createError && <p className="mt-2 text-xs text-red-400">{createError}</p>}
+    </Panel>
   );
 }
 

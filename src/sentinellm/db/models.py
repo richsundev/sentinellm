@@ -37,6 +37,7 @@ class Application(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default=None)
+    daily_cost_budget: Mapped[float | None] = mapped_column(Float, default=None)
 
     api_keys: Mapped[list[APIKey]] = relationship(back_populates="application")
 
@@ -92,6 +93,8 @@ class Trace(Base, TimestampMixin):
 
     cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
     similarity_score: Mapped[float | None] = mapped_column(Float, default=None)
+
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
 
     evaluation_status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     # pending | evaluating | completed | failed

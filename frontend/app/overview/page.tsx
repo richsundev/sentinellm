@@ -70,6 +70,11 @@ export default function OverviewPage() {
               : "—",
           sublabel: `${data.human_feedback_count} reviewed`,
         },
+        {
+          label: "Cache hit rate",
+          value: formatPercent(data.cache_hit_rate),
+          sublabel: `${data.cache_hit_count} hits · ${formatCost(data.estimated_cache_savings)} saved`,
+        },
       ]
     : [];
 
@@ -105,7 +110,7 @@ export default function OverviewPage() {
       {!error && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {loading || !data
-            ? Array.from({ length: 11 }).map((_, i) => (
+            ? Array.from({ length: 12 }).map((_, i) => (
                 <MetricCard key={i} label="" value="" loading />
               ))
             : kpis.map((k) => (

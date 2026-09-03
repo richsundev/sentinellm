@@ -3,12 +3,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApplicationCreate(BaseModel):
     name: str
     description: str | None = None
+    daily_cost_budget: float | None = Field(default=None, ge=0)
+
+
+class ApplicationUpdate(BaseModel):
+    description: str | None = None
+    daily_cost_budget: float | None = Field(default=None, ge=0)
 
 
 class ApplicationOut(BaseModel):
@@ -16,6 +22,7 @@ class ApplicationOut(BaseModel):
     id: str
     name: str
     description: str | None
+    daily_cost_budget: float | None
     created_at: datetime
 
 

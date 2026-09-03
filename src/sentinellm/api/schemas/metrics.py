@@ -36,6 +36,9 @@ class OverviewMetricsOut(BaseModel):
     timeseries: list[TimeseriesPoint]
     human_feedback_count: int
     human_judge_agreement_rate: float | None
+    cache_hit_count: int
+    cache_hit_rate: float
+    estimated_cache_savings: float
 
 
 class DailyCost(BaseModel):

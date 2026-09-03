@@ -11,6 +11,8 @@ export interface FilterBarProps {
   onStatusChange?: (v: string) => void;
   search?: string;
   onSearchChange?: (v: string) => void;
+  tag?: string;
+  onTagChange?: (v: string) => void;
 }
 
 export function FilterBar({
@@ -24,6 +26,8 @@ export function FilterBar({
   onStatusChange,
   search,
   onSearchChange,
+  tag,
+  onTagChange,
 }: FilterBarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-base-700 bg-base-850 p-3">
@@ -66,6 +70,9 @@ export function FilterBar({
           onChange={onSearchChange}
           placeholder="prompt or response text"
         />
+      )}
+      {onTagChange && (
+        <FilterInput label="Tag" value={tag ?? ""} onChange={onTagChange} placeholder="e.g. escalation" />
       )}
     </div>
   );

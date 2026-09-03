@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { useFilters } from "@/lib/filters-context";
 import { FilterBar } from "@/components/FilterBar";
@@ -22,22 +22,37 @@ export default function TracesPage() {
   const [applicationId, setApplicationId] = useState("");
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
+  const [tag, setTag] = useState("");
   const [offset, setOffset] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const activeFilters = {
+    model: model || undefined,
+    provider: provider || undefined,
+    application_id: applicationId || undefined,
+    environment: environment === "all" ? undefined : environment,
+    status: status || undefined,
+    q: search || undefined,
+    tag: tag || undefined,
+  };
 
   const { data, loading, error, refetch } = useFetch(
-    () =>
-      api.listTraces({
-        limit: LIMIT,
-        offset,
-        model: model || undefined,
-        provider: provider || undefined,
-        application_id: applicationId || undefined,
-        environment: environment === "all" ? undefined : environment,
-        status: status || undefined,
-        q: search || undefined,
-      }),
-    [model, provider, applicationId, environment, status, search, offset]
+    () => api.listTraces({ limit: LIMIT, offset, ...activeFilters }),
+    [model, provider, applicationId, environment, status, search, tag, offset]
   );
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await api.exportTracesCsv(activeFilters);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const columns: Column<Trace>[] = [
     {
@@ -130,7 +145,24 @@ export default function TracesPage() {
           setSearch(v);
           setOffset(0);
         }}
+        tag={tag}
+        onTagChange={(v) => {
+          setTag(v);
+          setOffset(0);
+        }}
       />
+
+      <div className="flex items-center justify-end gap-2">
+        {exportError && <span className="text-xs text-red-400">{exportError}</span>}
+        <button
+          type="button"
+          onClick={handleExport}
+          disabled={exporting}
+          className="rounded border border-base-600 bg-base-800 px-3 py-1.5 text-xs text-base-200 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          {exporting ? "Exporting…" : "Export CSV"}
+        </button>
+      </div>
 
       {error && <ErrorState message={error} onRetry={refetch} />}
 

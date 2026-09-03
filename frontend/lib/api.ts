@@ -4,6 +4,8 @@ import type {
   ApiKey,
   ApiKeyCreated,
   Application,
+  ApplicationCreateRequest,
+  ApplicationUpdateRequest,
   CostSummary,
   Dataset,
   DatasetRecord,
@@ -24,6 +26,7 @@ import type {
   TimeRange,
   Trace,
   TraceFeedback,
+  TraceTags,
 } from "./types";
 
 export const API_BASE_URL =
@@ -138,6 +141,7 @@ export type TraceFilters = {
   environment?: string;
   status?: string;
   q?: string;
+  tag?: string;
 };
 
 export type EvaluationFilters = {
@@ -220,6 +224,46 @@ export const api = {
     mutate<ModelInfo>("/models", { method: "POST", body: payload }),
   updateModel: (modelId: string, payload: ModelUpdateRequest) =>
     mutate<ModelInfo>(`/models/${encodeURIComponent(modelId)}`, { method: "PATCH", body: payload }),
+
+  // Application budgets (Settings page).
+  createApplication: (payload: ApplicationCreateRequest) =>
+    mutate<Application>("/applications", { method: "POST", body: payload }),
+  updateApplication: (applicationId: string, payload: ApplicationUpdateRequest) =>
+    mutate<Application>(`/applications/${encodeURIComponent(applicationId)}`, {
+      method: "PATCH",
+      body: payload,
+    }),
+
+  // Trace tags (Trace detail + Traces list filter).
+  updateTraceTags: (traceId: string, tags: string[]) =>
+    mutate<TraceTags>(`/traces/${encodeURIComponent(traceId)}/tags`, {
+      method: "PATCH",
+      body: { tags },
+    }),
+
+  // Trace CSV export (Traces page) — triggers a browser download rather
+  // than returning parsed JSON, since the endpoint streams text/csv.
+  exportTracesCsv: async (filters: TraceFilters = {}): Promise<void> => {
+    const url = new URL(`${API_PREFIX}/traces/export`, API_BASE_URL);
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== null && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+    const res = await fetch(url.toString(), { headers: { "X-API-Key": API_KEY } });
+    if (!res.ok) {
+      throw new ApiError(`Export failed with ${res.status}`, res.status);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = "traces.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(objectUrl);
+  },
 };
 
 export type Api = typeof api;

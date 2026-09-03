@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from fastapi.responses import StreamingResponse
+from sqlalchemy import ColumnElement, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sentinellm.api.deps import RequireRead, RequireWrite, get_db
 from sentinellm.api.schemas.common import Page
-from sentinellm.api.schemas.trace import TraceCreate, TraceFeedbackIn, TraceFeedbackOut, TraceOut
+from sentinellm.api.schemas.trace import (
+    TraceCreate,
+    TraceFeedbackIn,
+    TraceFeedbackOut,
+    TraceOut,
+    TraceTagsIn,
+    TraceTagsOut,
+)
 from sentinellm.core.config import get_settings
 from sentinellm.core.ids import new_request_id, new_trace_id
 from sentinellm.core.logging import get_logger
@@ -26,6 +37,56 @@ _LOAD_OPTS = (
     selectinload(Trace.routing_decision),
     selectinload(Trace.feedback),
 )
+_EXPORT_ROW_CAP = 5000
+_EXPORT_COLUMNS = [
+    "trace_id",
+    "created_at",
+    "application_id",
+    "environment",
+    "model",
+    "provider",
+    "status",
+    "latency_ms",
+    "estimated_cost",
+    "input_tokens",
+    "output_tokens",
+    "cache_hit",
+    "tags",
+    "overall_quality",
+    "feedback_rating",
+    "prompt",
+    "response",
+]
+
+
+def _trace_filter_clauses(
+    *,
+    model: str | None,
+    provider: str | None,
+    application_id: str | None,
+    environment: str | None,
+    status_filter: str | None,
+    q: str | None,
+    tag: str | None,
+) -> list[ColumnElement[bool]]:
+    clauses: list[ColumnElement[bool]] = []
+    for column, value in (
+        (Trace.model, model),
+        (Trace.provider, provider),
+        (Trace.application_id, application_id),
+        (Trace.environment, environment),
+        (Trace.status, status_filter),
+    ):
+        if value:
+            clauses.append(column == value)
+    if q:
+        clauses.append(or_(Trace.prompt.ilike(f"%{q}%"), Trace.response.ilike(f"%{q}%")))
+    if tag:
+        # Generic JSON column has no portable containment operator across
+        # SQLite (tests) and Postgres (prod), so match the quoted tag
+        # substring in the column's text representation instead.
+        clauses.append(cast(Trace.tags, String).ilike(f'%"{tag.strip().lower()}"%'))
+    return clauses
 
 
 @router.post(
@@ -123,30 +184,96 @@ async def list_traces(
     q: str | None = Query(
         default=None, description="Case-insensitive substring match over prompt + response"
     ),
+    tag: str | None = None,
 ) -> Page[TraceOut]:
-    stmt = select(Trace)
-    count_stmt = select(func.count()).select_from(Trace)
-    for column, value in (
-        (Trace.model, model),
-        (Trace.provider, provider),
-        (Trace.application_id, application_id),
-        (Trace.environment, environment),
-        (Trace.status, status_filter),
-    ):
-        if value:
-            stmt = stmt.where(column == value)
-            count_stmt = count_stmt.where(column == value)
-
-    if q:
-        search_clause = or_(Trace.prompt.ilike(f"%{q}%"), Trace.response.ilike(f"%{q}%"))
-        stmt = stmt.where(search_clause)
-        count_stmt = count_stmt.where(search_clause)
-
-    total = (await db.execute(count_stmt)).scalar_one()
-    stmt = stmt.options(*_LOAD_OPTS).order_by(Trace.created_at.desc()).limit(limit).offset(offset)
+    clauses = _trace_filter_clauses(
+        model=model,
+        provider=provider,
+        application_id=application_id,
+        environment=environment,
+        status_filter=status_filter,
+        q=q,
+        tag=tag,
+    )
+    total = (await db.execute(select(func.count()).select_from(Trace).where(*clauses))).scalar_one()
+    stmt = (
+        select(Trace)
+        .where(*clauses)
+        .options(*_LOAD_OPTS)
+        .order_by(Trace.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     rows = (await db.execute(stmt)).unique().scalars().all()
     return Page(
         items=[TraceOut.model_validate(r) for r in rows], total=total, limit=limit, offset=offset
+    )
+
+
+@router.get("/export", dependencies=[Depends(RequireRead)])
+async def export_traces(
+    db: AsyncSession = Depends(get_db),
+    model: str | None = None,
+    provider: str | None = None,
+    application_id: str | None = None,
+    environment: str | None = None,
+    status_filter: str | None = Query(default=None, alias="status"),
+    q: str | None = None,
+    tag: str | None = None,
+) -> StreamingResponse:
+    """Streams a CSV of traces matching the given filters (same filter set
+    as `list_traces`, minus pagination), capped at `_EXPORT_ROW_CAP` rows.
+    Must be declared before `GET /{trace_id}` so "export" isn't swallowed
+    as a `trace_id` path parameter.
+    """
+    clauses = _trace_filter_clauses(
+        model=model,
+        provider=provider,
+        application_id=application_id,
+        environment=environment,
+        status_filter=status_filter,
+        q=q,
+        tag=tag,
+    )
+    stmt = (
+        select(Trace)
+        .where(*clauses)
+        .options(selectinload(Trace.evaluation), selectinload(Trace.feedback))
+        .order_by(Trace.created_at.desc())
+        .limit(_EXPORT_ROW_CAP)
+    )
+    rows = (await db.execute(stmt)).unique().scalars().all()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(_EXPORT_COLUMNS)
+    for t in rows:
+        writer.writerow(
+            [
+                t.trace_id,
+                t.created_at.isoformat(),
+                t.application_id,
+                t.environment,
+                t.model,
+                t.provider,
+                t.status,
+                t.latency_ms,
+                t.estimated_cost,
+                t.input_tokens,
+                t.output_tokens,
+                t.cache_hit,
+                ";".join(t.tags),
+                t.evaluation.overall_quality if t.evaluation else "",
+                t.feedback.rating if t.feedback else "",
+                t.prompt,
+                t.response,
+            ]
+        )
+
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="traces.csv"'},
     )
 
 
@@ -186,3 +313,23 @@ async def submit_trace_feedback(
 
     await db.flush()
     return TraceFeedbackOut.model_validate(trace.feedback)
+
+
+@router.patch(
+    "/{trace_id}/tags",
+    response_model=TraceTagsOut,
+    dependencies=[Depends(RequireWrite)],
+)
+async def update_trace_tags(
+    trace_id: str, payload: TraceTagsIn, db: AsyncSession = Depends(get_db)
+) -> TraceTagsOut:
+    """Replaces the full tag set on a trace (not a merge/append)."""
+    trace = (await db.execute(select(Trace).where(Trace.trace_id == trace_id))).scalar_one_or_none()
+    if trace is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
+
+    # Normalized so filtering (`?tag=`) and display are consistent
+    # regardless of how a reviewer capitalized or spaced the tag.
+    trace.tags = sorted({t.strip().lower() for t in payload.tags if t.strip()})
+    await db.flush()
+    return TraceTagsOut(trace_id=trace.trace_id, tags=trace.tags)

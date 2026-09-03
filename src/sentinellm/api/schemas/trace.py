@@ -118,6 +118,15 @@ class TraceFeedbackOut(BaseModel):
     created_at: datetime
 
 
+class TraceTagsIn(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+
+
+class TraceTagsOut(BaseModel):
+    trace_id: str
+    tags: list[str]
+
+
 class TraceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -146,3 +155,4 @@ class TraceOut(BaseModel):
     feedback: TraceFeedbackOut | None = None
     cache_hit: bool
     similarity_score: float | None
+    tags: list[str] = Field(default_factory=list)

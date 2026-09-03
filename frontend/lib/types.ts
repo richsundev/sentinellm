@@ -94,6 +94,7 @@ export interface Trace {
   feedback: TraceFeedback | null;
   cache_hit: boolean;
   similarity_score: number | null;
+  tags: string[];
 }
 
 export type FeedbackRating = "up" | "down";
@@ -103,6 +104,11 @@ export interface TraceFeedback {
   rating: FeedbackRating;
   note: string | null;
   created_at: string;
+}
+
+export interface TraceTags {
+  trace_id: string;
+  tags: string[];
 }
 
 export type ModelStatus = "healthy" | "degraded" | "down";
@@ -179,7 +185,19 @@ export interface Application {
   id: string;
   name: string;
   description: string | null;
+  daily_cost_budget: number | null;
   created_at: string;
+}
+
+export interface ApplicationCreateRequest {
+  name: string;
+  description?: string;
+  daily_cost_budget?: number;
+}
+
+export interface ApplicationUpdateRequest {
+  description?: string;
+  daily_cost_budget?: number;
 }
 
 export interface ApiKey {
@@ -301,6 +319,9 @@ export interface OverviewMetrics {
   }[];
   human_feedback_count: number;
   human_judge_agreement_rate: number | null;
+  cache_hit_count: number;
+  cache_hit_rate: number;
+  estimated_cache_savings: number;
 }
 
 export interface CostSummary {

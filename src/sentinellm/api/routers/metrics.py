@@ -85,6 +85,9 @@ async def overview(
             timeseries=[],
             human_feedback_count=0,
             human_judge_agreement_rate=None,
+            cache_hit_count=0,
+            cache_hit_rate=0.0,
+            estimated_cache_savings=0.0,
         )
 
     latencies = sorted(t.latency_ms for t in traces)
@@ -127,6 +130,11 @@ async def overview(
         if judged_good == human_liked:
             agreements += 1
     human_judge_agreement_rate = round(agreements / compared, 4) if compared else None
+
+    cache_hit_count = sum(1 for t in traces if t.cache_hit)
+    miss_costs = [t.estimated_cost for t in traces if not t.cache_hit and t.status == "ok"]
+    avg_miss_cost = sum(miss_costs) / len(miss_costs) if miss_costs else 0.0
+    estimated_cache_savings = round(cache_hit_count * avg_miss_cost, 6)
 
     usage: dict[str, int] = {}
     provider_totals: dict[str, list[int]] = {}
@@ -185,6 +193,9 @@ async def overview(
         timeseries=timeseries,
         human_feedback_count=len(feedback_rows),
         human_judge_agreement_rate=human_judge_agreement_rate,
+        cache_hit_count=cache_hit_count,
+        cache_hit_rate=round(cache_hit_count / len(traces), 4),
+        estimated_cache_savings=estimated_cache_savings,
     )
 
 

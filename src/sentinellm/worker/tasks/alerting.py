@@ -11,6 +11,7 @@ serve only as the seed value the first time a rule is created, via
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.core.config import get_settings
 from sentinellm.core.logging import get_logger
-from sentinellm.db.models import Alert, AlertRuleConfig, Evaluation, Trace
+from sentinellm.db.models import Alert, AlertRuleConfig, Application, Evaluation, Trace
 
 logger = get_logger(__name__)
 
@@ -110,10 +111,14 @@ async def ensure_default_alert_rules(session: AsyncSession) -> list[AlertRuleCon
     return created
 
 
-async def _already_alerted(session: AsyncSession, rule: str) -> bool:
+async def _already_alerted(
+    session: AsyncSession, rule: str, affected_service: str | None = None
+) -> bool:
     stmt = select(Alert).where(
         Alert.rule == rule, Alert.timestamp >= datetime.now(UTC) - _DEDUPE_WINDOW
     )
+    if affected_service is not None:
+        stmt = stmt.where(Alert.affected_service == affected_service)
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
@@ -216,6 +221,59 @@ async def evaluate_alert_rules(session: AsyncSession) -> list[Alert]:
             )
         )
 
+    fired.extend(await _evaluate_application_budgets(session, traces))
+
     if fired:
         await session.commit()
+    return fired
+
+
+async def _evaluate_application_budgets(
+    session: AsyncSession, traces: Sequence[Trace]
+) -> list[Alert]:
+    """Per-`Application.daily_cost_budget` overage check, over the same
+    trailing window as `daily_cost` above. Separate from `RULE_DEFINITIONS`
+    because the threshold is per-application rather than a single global
+    value, so it can't live in the one-row-per-rule `alert_rules` table.
+    Traces are matched against both `Application.id` and `Application.name`
+    since `Trace.application_id` is a free-form string set by the caller
+    (SDK examples use a human slug, the seed script uses the row's id) —
+    not a declared foreign key.
+    """
+    budgeted_apps = (
+        (
+            await session.execute(
+                select(Application).where(Application.daily_cost_budget.isnot(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not budgeted_apps:
+        return []
+
+    cost_by_application_id: dict[str, float] = {}
+    for t in traces:
+        cost_by_application_id[t.application_id] = (
+            cost_by_application_id.get(t.application_id, 0.0) + t.estimated_cost
+        )
+
+    fired: list[Alert] = []
+    for app in budgeted_apps:
+        budget = app.daily_cost_budget
+        if budget is None:
+            continue
+        current = cost_by_application_id.get(app.id, 0.0) + cost_by_application_id.get(
+            app.name, 0.0
+        )
+        affected_service = f"app:{app.name}"
+        if current <= budget or await _already_alerted(
+            session, "app_cost_budget", affected_service=affected_service
+        ):
+            continue
+        fired.append(
+            await _fire(
+                session, "app_cost_budget", current, budget, "medium", affected_service, None
+            )
+        )
     return fired

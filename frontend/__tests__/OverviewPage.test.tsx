@@ -45,6 +45,9 @@ describe("OverviewPage (smoke test)", () => {
         ],
         human_feedback_count: 5,
         human_judge_agreement_rate: 0.8,
+        cache_hit_count: 12,
+        cache_hit_rate: 0.15,
+        estimated_cache_savings: 0.045,
       }),
     });
 

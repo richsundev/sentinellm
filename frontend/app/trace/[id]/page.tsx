@@ -215,6 +215,8 @@ export default function TraceDetailPage() {
         )}
       </Panel>
 
+      <TraceTagsPanel traceId={trace.trace_id} current={trace.tags} onUpdated={refetch} />
+
       <ReviewerFeedbackPanel traceId={trace.trace_id} current={trace.feedback} onSubmitted={refetch} />
 
       <Panel title="Evaluation">
@@ -295,6 +297,86 @@ function HeaderStat({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] uppercase tracking-wide text-base-400">{label}</div>
       <div className="font-mono text-sm text-base-100">{value}</div>
     </div>
+  );
+}
+
+function TraceTagsPanel({
+  traceId,
+  current,
+  onUpdated,
+}: {
+  traceId: string;
+  current: string[];
+  onUpdated: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function save(next: string[]) {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.updateTraceTags(traceId, next);
+      onUpdated();
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Failed to update tags");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function addTag() {
+    const value = draft.trim();
+    if (!value || current.includes(value.toLowerCase())) return;
+    setDraft("");
+    void save([...current, value]);
+  }
+
+  return (
+    <Panel title="Tags">
+      <div className="flex flex-wrap items-center gap-2">
+        {current.map((t) => (
+          <span
+            key={t}
+            className="flex items-center gap-1 rounded-full border border-base-600 bg-base-800 px-2.5 py-1 text-xs text-base-200"
+          >
+            {t}
+            <button
+              type="button"
+              onClick={() => void save(current.filter((existing) => existing !== t))}
+              disabled={saving}
+              className="text-base-500 hover:text-err disabled:cursor-not-allowed"
+              aria-label={`Remove tag ${t}`}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addTag();
+            }
+          }}
+          placeholder="Add a tag…"
+          disabled={saving}
+          className="w-32 rounded border border-base-600 bg-base-800 px-2 py-1 text-xs text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
+        />
+        <button
+          type="button"
+          onClick={addTag}
+          disabled={saving || !draft.trim()}
+          className="rounded border border-base-600 bg-base-800 px-2.5 py-1 text-xs text-base-300 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          Add
+        </button>
+      </div>
+      {saveError && <p className="mt-2 text-xs text-red-400">{saveError}</p>}
+    </Panel>
   );
 }
 

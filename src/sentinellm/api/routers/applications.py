@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from sentinellm.api.schemas.application import (
     APIKeyOut,
     ApplicationCreate,
     ApplicationOut,
+    ApplicationUpdate,
 )
 from sentinellm.api.schemas.common import Page
 from sentinellm.api.security import generate_api_key, hash_api_key, key_display_prefix
@@ -28,10 +29,31 @@ router = APIRouter(prefix="/api/v1/applications", tags=["applications"])
 async def create_application(
     payload: ApplicationCreate, db: AsyncSession = Depends(get_db)
 ) -> ApplicationOut:
-    app_row = Application(name=payload.name, description=payload.description)
+    app_row = Application(
+        name=payload.name,
+        description=payload.description,
+        daily_cost_budget=payload.daily_cost_budget,
+    )
     db.add(app_row)
     await db.flush()
     return ApplicationOut.model_validate(app_row)
+
+
+@router.patch(
+    "/{application_id}", response_model=ApplicationOut, dependencies=[Depends(RequireAdmin)]
+)
+async def update_application(
+    application_id: str, payload: ApplicationUpdate, db: AsyncSession = Depends(get_db)
+) -> ApplicationOut:
+    row = await db.get(Application, application_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"application '{application_id}' not found")
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+
+    await db.flush()
+    return ApplicationOut.model_validate(row)
 
 
 @router.get("", response_model=Page[ApplicationOut], dependencies=[Depends(RequireRead)])
