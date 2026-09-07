@@ -25,7 +25,13 @@ export default function SettingsPage() {
           </code>{" "}
           environment variable (see <code className="font-mono">.env.example</code>), not
           editable from the dashboard — every fired alert is a real HTTP POST to that
-          URL, delivered by the worker.
+          URL, delivered by the worker. Set{" "}
+          <code className="rounded bg-base-800 px-1 py-0.5 font-mono text-base-300">
+            SENTINEL_ALERT_WEBHOOK_FORMAT=slack
+          </code>{" "}
+          to post Slack-compatible <code className="font-mono">{"{text: ...}"}</code> messages
+          instead of the default generic JSON payload — works directly with a Slack Incoming
+          Webhook URL.
         </p>
       </Panel>
     </div>
@@ -166,20 +172,23 @@ function ApiKeysPanel() {
   const { data: apps } = useFetch(() => api.listApplications(), []);
   const [creating, setCreating] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [applicationId, setApplicationId] = useState("");
+  const [scopedToApplication, setScopedToApplication] = useState(false);
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const defaultApplicationId = apps?.items[0]?.id;
+  const selectedApplicationId = applicationId || apps?.items[0]?.id;
 
   async function handleCreate() {
-    if (!defaultApplicationId || !newKeyName.trim()) return;
+    if (!selectedApplicationId || !newKeyName.trim()) return;
     setCreating(true);
     setCreateError(null);
     try {
       const created = await api.createApiKey({
-        application_id: defaultApplicationId,
+        application_id: selectedApplicationId,
         name: newKeyName.trim(),
         role: "write",
+        scoped_to_application: scopedToApplication,
       });
       setRevealedKey(created.plaintext_key);
       setNewKeyName("");
@@ -199,6 +208,16 @@ function ApiKeysPanel() {
       render: (k) => <span className="font-mono text-base-400">{k.key_prefix}••••••••</span>,
     },
     { key: "role", header: "Role", render: (k) => <StatusBadge status={k.role} tone="info" /> },
+    {
+      key: "scoped_to_application",
+      header: "Scope",
+      render: (k) =>
+        k.scoped_to_application ? (
+          <StatusBadge status="own app only" tone="info" />
+        ) : (
+          <span className="text-base-500">all applications</span>
+        ),
+    },
     {
       key: "revoked",
       header: "Status",
@@ -246,18 +265,39 @@ function ApiKeysPanel() {
         />
       )}
 
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <select
+          value={selectedApplicationId ?? ""}
+          onChange={(e) => setApplicationId(e.target.value)}
+          disabled={creating}
+          className="rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 disabled:cursor-not-allowed"
+        >
+          {(apps?.items ?? []).map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
         <input
           value={newKeyName}
           onChange={(e) => setNewKeyName(e.target.value)}
           placeholder="Key name (e.g. ci-pipeline)"
-          disabled={!defaultApplicationId || creating}
+          disabled={!selectedApplicationId || creating}
           className="rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
         />
+        <label className="flex items-center gap-1.5 text-xs text-base-400">
+          <input
+            type="checkbox"
+            checked={scopedToApplication}
+            onChange={(e) => setScopedToApplication(e.target.checked)}
+            disabled={creating}
+          />
+          scope to this application only
+        </label>
         <button
           type="button"
           onClick={handleCreate}
-          disabled={!defaultApplicationId || !newKeyName.trim() || creating}
+          disabled={!selectedApplicationId || !newKeyName.trim() || creating}
           className="rounded border border-base-600 bg-base-800 px-3 py-1.5 text-xs text-base-200 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
         >
           {creating ? "Creating…" : "+ Create key"}

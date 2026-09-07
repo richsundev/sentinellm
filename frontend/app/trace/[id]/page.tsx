@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
@@ -16,6 +16,7 @@ import type {
   FeedbackRating,
   HallucinationClaim,
   RoutingCandidate,
+  Trace,
   TraceFeedback,
 } from "@/lib/types";
 
@@ -219,6 +220,8 @@ export default function TraceDetailPage() {
 
       <ReviewerFeedbackPanel traceId={trace.trace_id} current={trace.feedback} onSubmitted={refetch} />
 
+      <ReplayPanel trace={trace} />
+
       <Panel title="Evaluation">
         {!trace.evaluation ? (
           <p className="text-xs text-base-400">No evaluation recorded for this trace.</p>
@@ -296,6 +299,122 @@ function HeaderStat({ label, value }: { label: string; value: string }) {
     <div className="text-right">
       <div className="text-[10px] uppercase tracking-wide text-base-400">{label}</div>
       <div className="font-mono text-sm text-base-100">{value}</div>
+    </div>
+  );
+}
+
+function ReplayPanel({ trace }: { trace: Trace }) {
+  const router = useRouter();
+  const { data: models } = useFetch(() => api.listModels({ limit: 200 }), []);
+  const [modelOverride, setModelOverride] = useState("");
+  const [replaying, setReplaying] = useState(false);
+  const [replayError, setReplayError] = useState<string | null>(null);
+  const [replayed, setReplayed] = useState<Trace | null>(null);
+
+  async function handleReplay() {
+    setReplaying(true);
+    setReplayError(null);
+    try {
+      const result = await api.replayTrace(trace.trace_id, {
+        model: modelOverride || undefined,
+      });
+      setReplayed(result);
+    } catch (err) {
+      setReplayError(err instanceof ApiError ? err.message : "Replay failed");
+    } finally {
+      setReplaying(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Replay"
+      action={
+        <span className="text-[10px] text-base-500">
+          resubmit this prompt, optionally against a different model
+        </span>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={modelOverride}
+          onChange={(e) => setModelOverride(e.target.value)}
+          disabled={replaying}
+          className="rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 disabled:cursor-not-allowed"
+        >
+          <option value="">router picks (same as original if unset)</option>
+          {(models?.items ?? []).map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.id}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={handleReplay}
+          disabled={replaying}
+          className="rounded border border-base-600 bg-base-800 px-3 py-1.5 text-xs text-base-200 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          {replaying ? "Replaying…" : "Re-run this prompt"}
+        </button>
+      </div>
+      {replayError && <p className="mt-2 text-xs text-red-400">{replayError}</p>}
+      {replayed && (
+        <div className="mt-3 space-y-2 rounded border border-base-700 bg-base-900 p-3">
+          <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+            <ReplayStat label="Model" original={trace.model} replayed={replayed.model} />
+            <ReplayStat
+              label="Cost"
+              original={formatCost(trace.estimated_cost)}
+              replayed={formatCost(replayed.estimated_cost)}
+            />
+            <ReplayStat
+              label="Latency"
+              original={formatMs(trace.latency_ms)}
+              replayed={formatMs(replayed.latency_ms)}
+            />
+            <ReplayStat
+              label="Quality"
+              original={trace.evaluation ? trace.evaluation.overall_quality.toFixed(2) : "—"}
+              replayed={replayed.evaluation ? replayed.evaluation.overall_quality.toFixed(2) : "—"}
+            />
+          </div>
+          <div>
+            <div className="mb-1 text-[11px] uppercase tracking-wide text-base-400">
+              New response
+            </div>
+            <pre className="whitespace-pre-wrap rounded bg-base-800 p-2 text-xs text-base-300">
+              {replayed.response}
+            </pre>
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push(`/trace/${encodeURIComponent(replayed.trace_id)}`)}
+            className="text-xs text-accent hover:underline"
+          >
+            View full replayed trace →
+          </button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ReplayStat({
+  label,
+  original,
+  replayed,
+}: {
+  label: string;
+  original: string;
+  replayed: string;
+}) {
+  const changed = original !== replayed;
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-base-500">{label}</div>
+      <div className="font-mono text-base-400 line-through">{original}</div>
+      <div className={`font-mono ${changed ? "text-accent" : "text-base-200"}`}>{replayed}</div>
     </div>
   );
 }

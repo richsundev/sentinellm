@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.api.deps import RequireRead, get_db
+from sentinellm.api.deps import RequireRead, get_db, scope_of
 from sentinellm.api.schemas.metrics import (
     ApplicationCost,
     CostSummaryOut,
@@ -24,7 +24,7 @@ from sentinellm.api.schemas.metrics import (
     ProviderReliability,
     TimeseriesPoint,
 )
-from sentinellm.db.models import Evaluation, EvaluationMetric, Trace, TraceFeedback
+from sentinellm.db.models import APIKey, Evaluation, EvaluationMetric, Trace, TraceFeedback
 
 router = APIRouter(prefix="/api/v1/metrics", tags=["metrics"])
 
@@ -46,9 +46,10 @@ def _percentile(sorted_values: list[float], p: float) -> float:
     return round(sorted_values[idx], 2)
 
 
-@router.get("/overview", response_model=OverviewMetricsOut, dependencies=[Depends(RequireRead)])
+@router.get("/overview", response_model=OverviewMetricsOut)
 async def overview(
     db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireRead),
     time_range: str = Query(default="24h", alias="range", pattern="^(1h|24h|7d|30d)$"),
     model: str | None = None,
     provider: str | None = None,
@@ -65,6 +66,9 @@ async def overview(
     ):
         if value:
             stmt = stmt.where(column == value)
+    scope = scope_of(api_key)
+    if scope.ids is not None:
+        stmt = stmt.where(Trace.application_id.in_(scope.ids))
     stmt = stmt.order_by(Trace.created_at.asc()).limit(_SAMPLE_CAP)
     traces = (await db.execute(stmt)).scalars().all()
 
@@ -226,17 +230,18 @@ def _compute_cost_insight(per_model: dict[str, dict[str, float]]) -> str | None:
     return None
 
 
-@router.get("/cost", response_model=CostSummaryOut, dependencies=[Depends(RequireRead)])
+@router.get("/cost", response_model=CostSummaryOut)
 async def cost_summary(
     db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireRead),
     time_range: str = Query(default="30d", alias="range", pattern="^(1h|24h|7d|30d)$"),
 ) -> CostSummaryOut:
     since = datetime.now(UTC) - _RANGE_TO_DELTA[time_range]
-    traces = (
-        (await db.execute(select(Trace).where(Trace.created_at >= since).limit(_SAMPLE_CAP)))
-        .scalars()
-        .all()
-    )
+    stmt = select(Trace).where(Trace.created_at >= since)
+    scope = scope_of(api_key)
+    if scope.ids is not None:
+        stmt = stmt.where(Trace.application_id.in_(scope.ids))
+    traces = (await db.execute(stmt.limit(_SAMPLE_CAP))).scalars().all()
 
     if not traces:
         return CostSummaryOut(

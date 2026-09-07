@@ -111,6 +111,12 @@ export interface TraceTags {
   tags: string[];
 }
 
+export interface TraceReplayRequest {
+  model?: string;
+  prompt_version?: number;
+  use_cache?: boolean;
+}
+
 export type ModelStatus = "healthy" | "degraded" | "down";
 
 export interface ModelInfo {
@@ -123,6 +129,8 @@ export interface ModelInfo {
   avg_quality: number | null;
   avg_latency_ms: number | null;
   status: ModelStatus;
+  status_auto: boolean;
+  status_reason: string | null;
 }
 
 export interface ModelCreateRequest {
@@ -145,6 +153,7 @@ export interface ModelUpdateRequest {
   quality_tier?: number;
   avg_latency_ms_prior?: number;
   status?: ModelStatus;
+  status_auto?: boolean;
 }
 
 export type Severity = "low" | "medium" | "high" | "critical";
@@ -207,6 +216,7 @@ export interface ApiKey {
   role: "read" | "write" | "admin";
   key_prefix: string;
   revoked: boolean;
+  scoped_to_application: boolean;
   created_at: string;
   last_used_at: string | null;
 }
@@ -217,6 +227,7 @@ export interface ApiKeyCreated {
   role: string;
   key_prefix: string;
   plaintext_key: string;
+  scoped_to_application: boolean;
 }
 
 export type PromptStatus = "draft" | "testing" | "production" | "deprecated";

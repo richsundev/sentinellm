@@ -26,6 +26,7 @@ import type {
   TimeRange,
   Trace,
   TraceFeedback,
+  TraceReplayRequest,
   TraceTags,
 } from "./types";
 
@@ -192,8 +193,12 @@ export const api = {
   // Application / API key management (Settings page).
   listApplications: () => request<Paginated<Application>>("/applications"),
   listApiKeys: () => request<Paginated<ApiKey>>("/applications/api-keys"),
-  createApiKey: (payload: { application_id: string; name: string; role: "read" | "write" | "admin" }) =>
-    mutate<ApiKeyCreated>("/applications/api-keys", { method: "POST", body: payload }),
+  createApiKey: (payload: {
+    application_id: string;
+    name: string;
+    role: "read" | "write" | "admin";
+    scoped_to_application?: boolean;
+  }) => mutate<ApiKeyCreated>("/applications/api-keys", { method: "POST", body: payload }),
 
   // Dataset import (Datasets page).
   importDataset: (formData: FormData) =>
@@ -239,6 +244,13 @@ export const api = {
     mutate<TraceTags>(`/traces/${encodeURIComponent(traceId)}/tags`, {
       method: "PATCH",
       body: { tags },
+    }),
+
+  // Trace replay (Trace detail page).
+  replayTrace: (traceId: string, payload: TraceReplayRequest = {}) =>
+    mutate<Trace>(`/traces/${encodeURIComponent(traceId)}/replay`, {
+      method: "POST",
+      body: payload,
     }),
 
   // Trace CSV export (Traces page) — triggers a browser download rather

@@ -9,13 +9,16 @@ from sqlalchemy import ColumnElement, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from sentinellm.api.deps import RequireRead, RequireWrite, get_db
+from sentinellm.api.deps import RequireRead, RequireWrite, get_db, scope_of
 from sentinellm.api.schemas.common import Page
+from sentinellm.api.schemas.generate import GenerateRequest
 from sentinellm.api.schemas.trace import (
+    RetrievedDocumentIn,
     TraceCreate,
     TraceFeedbackIn,
     TraceFeedbackOut,
     TraceOut,
+    TraceReplayIn,
     TraceTagsIn,
     TraceTagsOut,
 )
@@ -23,9 +26,10 @@ from sentinellm.core.config import get_settings
 from sentinellm.core.ids import new_request_id, new_trace_id
 from sentinellm.core.logging import get_logger
 from sentinellm.core.queue import enqueue_evaluation
-from sentinellm.db.models import Evaluation, Trace, TraceFeedback, TraceSpan
+from sentinellm.db.models import APIKey, Evaluation, Trace, TraceFeedback, TraceSpan
 from sentinellm.pricing.calculator import calculate_cost
 from sentinellm.security.pii import redact_pii
+from sentinellm.services.generation import generate as generate_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/traces", tags=["traces"])
@@ -89,19 +93,22 @@ def _trace_filter_clauses(
     return clauses
 
 
-@router.post(
-    "",
-    response_model=TraceOut,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequireWrite)],
-)
-async def ingest_trace(payload: TraceCreate, db: AsyncSession = Depends(get_db)) -> TraceOut:
+@router.post("", response_model=TraceOut, status_code=status.HTTP_201_CREATED)
+async def ingest_trace(
+    payload: TraceCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
+) -> TraceOut:
     """Ingest a trace already produced by a client application (post-hoc
     reporting via the SDK, as opposed to `/generate`, which SentinelLLM
     executes itself). Idempotent on `trace_id`: re-submitting the same
     `trace_id` returns the original trace unchanged rather than creating a
     duplicate or re-queuing evaluation.
     """
+    if not scope_of(api_key).contains(payload.application_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "API key is scoped to a different application"
+        )
     trace_id = payload.trace_id or new_trace_id()
     existing = await db.execute(
         select(Trace).where(Trace.trace_id == trace_id).options(*_LOAD_OPTS)
@@ -171,9 +178,10 @@ async def ingest_trace(payload: TraceCreate, db: AsyncSession = Depends(get_db))
     return TraceOut.model_validate(trace)
 
 
-@router.get("", response_model=Page[TraceOut], dependencies=[Depends(RequireRead)])
+@router.get("", response_model=Page[TraceOut])
 async def list_traces(
     db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     model: str | None = None,
@@ -195,6 +203,9 @@ async def list_traces(
         q=q,
         tag=tag,
     )
+    scope = scope_of(api_key)
+    if scope.ids is not None:
+        clauses.append(Trace.application_id.in_(scope.ids))
     total = (await db.execute(select(func.count()).select_from(Trace).where(*clauses))).scalar_one()
     stmt = (
         select(Trace)
@@ -210,9 +221,10 @@ async def list_traces(
     )
 
 
-@router.get("/export", dependencies=[Depends(RequireRead)])
+@router.get("/export")
 async def export_traces(
     db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireRead),
     model: str | None = None,
     provider: str | None = None,
     application_id: str | None = None,
@@ -235,6 +247,9 @@ async def export_traces(
         q=q,
         tag=tag,
     )
+    scope = scope_of(api_key)
+    if scope.ids is not None:
+        clauses.append(Trace.application_id.in_(scope.ids))
     stmt = (
         select(Trace)
         .where(*clauses)
@@ -277,22 +292,23 @@ async def export_traces(
     )
 
 
-@router.get("/{trace_id}", response_model=TraceOut, dependencies=[Depends(RequireRead)])
-async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)) -> TraceOut:
+@router.get("/{trace_id}", response_model=TraceOut)
+async def get_trace(
+    trace_id: str, db: AsyncSession = Depends(get_db), api_key: APIKey = Depends(RequireRead)
+) -> TraceOut:
     stmt = select(Trace).where(Trace.trace_id == trace_id).options(*_LOAD_OPTS)
     row = (await db.execute(stmt)).unique().scalar_one_or_none()
-    if row is None:
+    if row is None or not scope_of(api_key).contains(row.application_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
     return TraceOut.model_validate(row)
 
 
-@router.post(
-    "/{trace_id}/feedback",
-    response_model=TraceFeedbackOut,
-    dependencies=[Depends(RequireWrite)],
-)
+@router.post("/{trace_id}/feedback", response_model=TraceFeedbackOut)
 async def submit_trace_feedback(
-    trace_id: str, payload: TraceFeedbackIn, db: AsyncSession = Depends(get_db)
+    trace_id: str,
+    payload: TraceFeedbackIn,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> TraceFeedbackOut:
     """Upserts a human reviewer's verdict on a trace — one row per trace,
     not a history, so re-submitting overwrites the previous rating/note
@@ -302,7 +318,7 @@ async def submit_trace_feedback(
         select(Trace).where(Trace.trace_id == trace_id).options(selectinload(Trace.feedback))
     )
     trace = (await db.execute(trace_stmt)).unique().scalar_one_or_none()
-    if trace is None:
+    if trace is None or not scope_of(api_key).contains(trace.application_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
 
     if trace.feedback is not None:
@@ -315,17 +331,16 @@ async def submit_trace_feedback(
     return TraceFeedbackOut.model_validate(trace.feedback)
 
 
-@router.patch(
-    "/{trace_id}/tags",
-    response_model=TraceTagsOut,
-    dependencies=[Depends(RequireWrite)],
-)
+@router.patch("/{trace_id}/tags", response_model=TraceTagsOut)
 async def update_trace_tags(
-    trace_id: str, payload: TraceTagsIn, db: AsyncSession = Depends(get_db)
+    trace_id: str,
+    payload: TraceTagsIn,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> TraceTagsOut:
     """Replaces the full tag set on a trace (not a merge/append)."""
     trace = (await db.execute(select(Trace).where(Trace.trace_id == trace_id))).scalar_one_or_none()
-    if trace is None:
+    if trace is None or not scope_of(api_key).contains(trace.application_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
 
     # Normalized so filtering (`?tag=`) and display are consistent
@@ -333,3 +348,39 @@ async def update_trace_tags(
     trace.tags = sorted({t.strip().lower() for t in payload.tags if t.strip()})
     await db.flush()
     return TraceTagsOut(trace_id=trace.trace_id, tags=trace.tags)
+
+
+@router.post("/{trace_id}/replay", response_model=TraceOut, status_code=status.HTTP_201_CREATED)
+async def replay_trace(
+    trace_id: str,
+    payload: TraceReplayIn,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
+) -> TraceOut:
+    """Resubmits an existing trace's prompt through the full `/generate`
+    pipeline again — same application/environment/retrieved context, with an
+    optional model or prompt_version override — so a reviewer can compare a
+    routing or prompt change against a real past request. The original
+    trace is untouched; this always produces a new one, cross-referenced via
+    `metadata.replay_of`.
+    """
+    original = (
+        await db.execute(select(Trace).where(Trace.trace_id == trace_id))
+    ).scalar_one_or_none()
+    if original is None or not scope_of(api_key).contains(original.application_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
+
+    request = GenerateRequest(
+        application_id=original.application_id,
+        environment=original.environment,
+        question=original.prompt,
+        system_prompt=original.system_prompt,
+        retrieved_documents=[RetrievedDocumentIn(**doc) for doc in original.retrieved_documents],
+        preferred_model=payload.model,
+        use_cache=payload.use_cache,
+        prompt_id=original.prompt_id,
+        prompt_version=payload.prompt_version or original.prompt_version,
+        metadata={**original.trace_metadata, "replay_of": original.trace_id},
+    )
+    new_trace = await generate_service(db, request)
+    return TraceOut.model_validate(new_trace)

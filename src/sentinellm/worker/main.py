@@ -17,12 +17,14 @@ from sentinellm.db.session import get_sessionmaker
 from sentinellm.services.evaluation_factory import get_evaluation_pipeline
 from sentinellm.worker.tasks.alerting import evaluate_alert_rules
 from sentinellm.worker.tasks.evaluate import process_evaluation_job
+from sentinellm.worker.tasks.model_health import evaluate_model_health
 from sentinellm.worker.tasks.regression import detect_regressions
 
 logger = get_logger(__name__)
 
 _REGRESSION_INTERVAL_S = 60
 _ALERTING_INTERVAL_S = 60
+_MODEL_HEALTH_INTERVAL_S = 60
 
 
 async def evaluation_consumer_loop(stop_event: asyncio.Event) -> None:
@@ -69,6 +71,18 @@ async def alerting_loop(stop_event: asyncio.Event) -> None:
             await asyncio.wait_for(stop_event.wait(), timeout=_ALERTING_INTERVAL_S)
 
 
+async def model_health_loop(stop_event: asyncio.Event) -> None:
+    session_factory = get_sessionmaker()
+    while not stop_event.is_set():
+        async with session_factory() as session:
+            try:
+                await evaluate_model_health(session)
+            except Exception:
+                logger.exception("model_health_loop_error")
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=_MODEL_HEALTH_INTERVAL_S)
+
+
 async def run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -84,6 +98,7 @@ async def run() -> None:
         evaluation_consumer_loop(stop_event),
         regression_loop(stop_event),
         alerting_loop(stop_event),
+        model_health_loop(stop_event),
     )
 
 

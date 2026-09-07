@@ -30,6 +30,10 @@ class APIKeyCreate(BaseModel):
     application_id: str
     name: str = "default"
     role: Literal["read", "write", "admin"] = "write"
+    scoped_to_application: bool = Field(
+        default=False,
+        description="If true, this key can only see/write its own application's data",
+    )
 
 
 class APIKeyCreated(BaseModel):
@@ -38,6 +42,7 @@ class APIKeyCreated(BaseModel):
     role: str
     key_prefix: str
     plaintext_key: str
+    scoped_to_application: bool
 
 
 class APIKeyOut(BaseModel):
@@ -48,5 +53,6 @@ class APIKeyOut(BaseModel):
     role: str
     key_prefix: str
     revoked: bool
+    scoped_to_application: bool
     created_at: datetime
     last_used_at: datetime | None

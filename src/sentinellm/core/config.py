@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     regression_threshold_pct: float = 5.0
 
     alert_webhook_url: str | None = None
+    alert_webhook_format: Literal["generic", "slack"] = "generic"
     hallucination_rate_threshold: float = 0.08
     p95_latency_threshold_ms: float = 3000.0
     error_rate_threshold: float = 0.05

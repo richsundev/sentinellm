@@ -18,6 +18,8 @@ class ModelOut(BaseModel):
     avg_quality: float | None = None
     avg_latency_ms: float | None = None
     status: str
+    status_auto: bool
+    status_reason: str | None
 
 
 class ModelCreate(BaseModel):
@@ -42,3 +44,10 @@ class ModelUpdate(BaseModel):
     quality_tier: float | None = Field(default=None, ge=0.0, le=1.0)
     avg_latency_ms_prior: float | None = Field(default=None, gt=0)
     status: ModelStatus | None = None
+    status_auto: bool | None = Field(
+        default=None,
+        description=(
+            "Set explicitly to re-enable automatic health management "
+            "(a bare `status` PATCH pins it to False, see routers/models.py)."
+        ),
+    )

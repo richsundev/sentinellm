@@ -25,6 +25,8 @@ async def _to_out(db: AsyncSession, row: ModelPricing) -> ModelOut:
         avg_quality=stats.predicted_quality if stats.sample_count > 0 else None,
         avg_latency_ms=stats.avg_latency_ms if stats.sample_count > 0 else None,
         status=row.status,
+        status_auto=row.status_auto,
+        status_reason=row.status_reason,
     )
 
 
@@ -82,6 +84,11 @@ async def update_model(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"model '{model_id}' not found")
 
     updates = payload.model_dump(exclude_unset=True)
+    if "status" in updates and "status_auto" not in updates:
+        # A bare status PATCH is an operator override — pin it so the
+        # model_health worker loop doesn't flip it back on the next pass.
+        updates["status_auto"] = False
+        row.status_reason = None
     for field, value in updates.items():
         setattr(row, field, value)
 

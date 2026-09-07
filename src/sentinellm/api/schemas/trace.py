@@ -127,6 +127,16 @@ class TraceTagsOut(BaseModel):
     tags: list[str]
 
 
+class TraceReplayIn(BaseModel):
+    model: str | None = Field(
+        default=None, description="Force this model instead of letting the router pick one"
+    )
+    prompt_version: int | None = Field(
+        default=None, description="Override the original trace's prompt_version, same prompt_id"
+    )
+    use_cache: bool = False
+
+
 class TraceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -38,6 +38,16 @@ export default function ModelsPage() {
     }
   }
 
+  async function handleResetToAuto(modelId: string) {
+    setUpdatingId(modelId);
+    try {
+      await api.updateModel(modelId, { status_auto: true });
+      await refetch();
+    } finally {
+      setUpdatingId(null);
+    }
+  }
+
   const columns: Column<ModelInfo>[] = [
     {
       key: "name",
@@ -90,19 +100,36 @@ export default function ModelsPage() {
       key: "status",
       header: "Status",
       render: (m) => (
-        <select
-          value={m.status}
-          disabled={updatingId === m.id}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => handleStatusChange(m.id, e.target.value as ModelStatus)}
-          className="rounded border border-base-600 bg-base-800 px-1.5 py-0.5 text-[11px] text-base-200 disabled:cursor-not-allowed"
-        >
-          {STATUS_OPTIONS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <select
+            value={m.status}
+            disabled={updatingId === m.id}
+            onChange={(e) => handleStatusChange(m.id, e.target.value as ModelStatus)}
+            title={m.status_reason ?? undefined}
+            className="rounded border border-base-600 bg-base-800 px-1.5 py-0.5 text-[11px] text-base-200 disabled:cursor-not-allowed"
+          >
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          {m.status_auto ? (
+            <span className="text-[10px] text-base-500" title={m.status_reason ?? "auto-managed"}>
+              auto
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => handleResetToAuto(m.id)}
+              disabled={updatingId === m.id}
+              title="Manually pinned — click to let the health checker manage this again"
+              className="text-[10px] text-accent underline decoration-dotted hover:text-accent/80 disabled:cursor-not-allowed"
+            >
+              manual
+            </button>
+          )}
+        </div>
       ),
       sortValue: (m) => m.status,
     },

@@ -144,22 +144,39 @@ async def _fire(
 
     settings = get_settings()
     if settings.alert_webhook_url:
+        payload = (
+            _slack_payload(rule, current, threshold, severity, service, model)
+            if settings.alert_webhook_format == "slack"
+            else {
+                "rule": rule,
+                "current_value": current,
+                "threshold": threshold,
+                "severity": severity,
+                "affected_service": service,
+                "affected_model": model,
+            }
+        )
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(
-                    settings.alert_webhook_url,
-                    json={
-                        "rule": rule,
-                        "current_value": current,
-                        "threshold": threshold,
-                        "severity": severity,
-                        "affected_service": service,
-                        "affected_model": model,
-                    },
-                )
+                await client.post(settings.alert_webhook_url, json=payload)
         except httpx.HTTPError:
             logger.warning("alert_webhook_delivery_failed", rule=rule)
     return alert
+
+
+def _slack_payload(
+    rule: str, current: float, threshold: float, severity: str, service: str, model: str | None
+) -> dict[str, object]:
+    """Slack's Incoming Webhook format expects a top-level `text` (or
+    `blocks`); a plain `{rule, current_value, ...}` object posts as an
+    empty message. See `SENTINEL_ALERT_WEBHOOK_FORMAT` in core/config.py.
+    """
+    model_suffix = f" · model `{model}`" if model else ""
+    text = (
+        f"*SentinelLLM alert* [{severity}] `{rule}` — current {current:.4g} vs "
+        f"threshold {threshold:.4g} · service `{service}`{model_suffix}"
+    )
+    return {"text": text}
 
 
 async def evaluate_alert_rules(session: AsyncSession) -> list[Alert]:

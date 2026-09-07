@@ -55,6 +55,7 @@ class APIKey(Base, TimestampMixin):
     role: Mapped[str] = mapped_column(String(20), default="write")  # read | write | admin
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    scoped_to_application: Mapped[bool] = mapped_column(Boolean, default=False)
 
     application: Mapped[Application] = relationship(back_populates="api_keys")
 
@@ -240,6 +241,8 @@ class ModelPricing(Base, TimestampMixin):
     avg_latency_ms_prior: Mapped[float] = mapped_column(Float, default=800.0)
     status: Mapped[str] = mapped_column(String(20), default="healthy")
     # healthy | degraded | down
+    status_auto: Mapped[bool] = mapped_column(Boolean, default=True)
+    status_reason: Mapped[str | None] = mapped_column(Text, default=None)
 
 
 class RoutingDecision(Base, TimestampMixin):
