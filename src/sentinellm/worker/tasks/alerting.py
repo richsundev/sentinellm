@@ -122,6 +122,41 @@ async def _already_alerted(
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
+async def deliver_alert_webhook(alert: Alert) -> None:
+    """Posts a fired `Alert` to `SENTINEL_ALERT_WEBHOOK_URL`, if configured
+    — shared by `_fire` (the five global threshold rules + the per-app cost
+    budget check) and `worker.tasks.rollout` (auto-rollback alerts), so
+    every autonomous decision the platform makes notifies the same way.
+    """
+    settings = get_settings()
+    if not settings.alert_webhook_url:
+        return
+    payload = (
+        _slack_payload(
+            alert.rule,
+            alert.current_value,
+            alert.threshold,
+            alert.severity,
+            alert.affected_service,
+            alert.affected_model,
+        )
+        if settings.alert_webhook_format == "slack"
+        else {
+            "rule": alert.rule,
+            "current_value": alert.current_value,
+            "threshold": alert.threshold,
+            "severity": alert.severity,
+            "affected_service": alert.affected_service,
+            "affected_model": alert.affected_model,
+        }
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(settings.alert_webhook_url, json=payload)
+    except httpx.HTTPError:
+        logger.warning("alert_webhook_delivery_failed", rule=alert.rule)
+
+
 async def _fire(
     session: AsyncSession,
     rule: str,
@@ -141,26 +176,7 @@ async def _fire(
     )
     session.add(alert)
     await session.flush()
-
-    settings = get_settings()
-    if settings.alert_webhook_url:
-        payload = (
-            _slack_payload(rule, current, threshold, severity, service, model)
-            if settings.alert_webhook_format == "slack"
-            else {
-                "rule": rule,
-                "current_value": current,
-                "threshold": threshold,
-                "severity": severity,
-                "affected_service": service,
-                "affected_model": model,
-            }
-        )
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                await client.post(settings.alert_webhook_url, json=payload)
-        except httpx.HTTPError:
-            logger.warning("alert_webhook_delivery_failed", rule=rule)
+    await deliver_alert_webhook(alert)
     return alert
 
 

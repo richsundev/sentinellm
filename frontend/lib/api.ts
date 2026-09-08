@@ -22,6 +22,9 @@ import type {
   PromptPromotionResult,
   PromptVersion,
   Regression,
+  Rollout,
+  RolloutCreateRequest,
+  RolloutDetail,
   RoutingDecision,
   TimeRange,
   Trace,
@@ -276,6 +279,22 @@ export const api = {
     document.body.removeChild(link);
     URL.revokeObjectURL(objectUrl);
   },
+
+  // Progressive model canary rollouts (Rollouts page).
+  listRollouts: (params: { application_id?: string; stage?: string; limit?: number } = {}) =>
+    request<Paginated<Rollout>>("/rollouts", params),
+  getRollout: (rolloutId: string) =>
+    request<RolloutDetail>(`/rollouts/${encodeURIComponent(rolloutId)}`),
+  createRollout: (payload: RolloutCreateRequest) =>
+    mutate<Rollout>("/rollouts", { method: "POST", body: payload }),
+  pauseRollout: (rolloutId: string) =>
+    mutate<Rollout>(`/rollouts/${encodeURIComponent(rolloutId)}/pause`, { method: "POST" }),
+  resumeRollout: (rolloutId: string) =>
+    mutate<Rollout>(`/rollouts/${encodeURIComponent(rolloutId)}/resume`, { method: "POST" }),
+  promoteRollout: (rolloutId: string) =>
+    mutate<Rollout>(`/rollouts/${encodeURIComponent(rolloutId)}/promote`, { method: "POST" }),
+  rollbackRollout: (rolloutId: string) =>
+    mutate<Rollout>(`/rollouts/${encodeURIComponent(rolloutId)}/rollback`, { method: "POST" }),
 };
 
 export type Api = typeof api;

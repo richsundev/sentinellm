@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -22,6 +23,7 @@ from sentinellm.api.routers import (
     metrics,
     models,
     prompts,
+    rollouts,
     routing,
     traces,
     webhook,
@@ -74,6 +76,7 @@ def create_app() -> FastAPI:
         alerts.regressions_router,
         metrics.router,
         applications.router,
+        rollouts.router,
         webhook.router,
     ):
         app.include_router(router)
@@ -91,8 +94,13 @@ def create_app() -> FastAPI:
 
 async def _validation_error_handler(_request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
+    # exc.errors() can carry a raw exception instance in ctx["error"] for a
+    # ValueError raised from a @model_validator/@field_validator (a normal
+    # Pydantic v2 pattern for cross-field checks) — jsonable_encoder is what
+    # turns that into a string instead of crashing json.dumps.
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": exc.errors()}
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": jsonable_encoder(exc.errors())},
     )
 
 

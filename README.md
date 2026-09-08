@@ -150,19 +150,23 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 | Hallucination detection (claim extraction + verification) | ✅ | Modular extractor/verifier strategies |
 | RAG evaluation metrics (Recall@K, Precision@K, MRR, NDCG) | ✅ | `evaluation/rag_metrics.py` + benchmark dataset |
 | Intelligent model router with explainable scoring | ✅ | `routing_score = f(quality, cost, latency, risk)`, min-max normalized |
+| **Autonomous progressive canary rollouts** | ✅ | Probabilistically splits an app's un-pinned `/generate` traffic between an incumbent and challenger model; a worker loop steps traffic up, auto-promotes at 100%, or auto-rolls-back to 0% from the challenger's real trailing error rate/quality/model-health — no operator in the loop unless they pause/promote/rollback manually |
+| Automatic model health detection | ✅ | A worker loop flips `ModelPricing.status` (healthy/degraded/down) from real trailing error rate; a manual `PATCH .../status` pins it against being overridden |
 | Resilient execution (retry + backoff + jitter + fallback chain) | ✅ | Distinguishes retryable vs. terminal errors (e.g. context overflow) |
-| Prompt registry with versioning + status lifecycle | ✅ | draft → testing → production → deprecated |
+| Prompt registry with versioning, status lifecycle + promotion gate | ✅ | draft → testing → production → deprecated; promotion requires a passing experiment (`pass_rate ≥ threshold`) for that exact prompt version |
+| Trace replay | ✅ | `POST /traces/{id}/replay` resubmits a trace's prompt through `/generate` with an optional model override, for side-by-side comparison |
+| Human feedback + full-text + tag search on traces | ✅ | Thumbs up/down with notes, `?q=` substring search, `?tag=` filtering, CSV export of the filtered result set |
 | On-demand experiment runs (`POST /experiments/run`) | ✅ | Runs the real generate+evaluate pipeline over a dataset, not just seed-script output |
 | Server-computed experiment comparison (`GET /experiments/compare`) | ✅ | Per-metric delta/delta_pct/winner, not just a client-side chart |
 | Dataset import from `.jsonl`/`.csv` upload | ✅ | `POST /datasets/import`, alongside inline-JSON `POST /datasets` |
 | Automated regression detection | ✅ | Windowed comparison + likely-cause diffing |
-| Semantic response cache | ✅ | Cosine similarity over a shared embedding abstraction |
-| Cost tracking + "cheaper model, similar quality" insight | ✅ | Computed live from stored traces, never hardcoded |
-| Alerting with configurable thresholds, webhook delivery + dedup | ✅ | Thresholds live in the `alert_rules` table, editable from Settings / `PATCH /alerts/rules/{rule}` — env vars only seed the defaults |
-| API-key auth with RBAC (read/write/admin) | ✅ | SHA-256-hashed keys, shown once at creation, real create/list UI on Settings |
+| Semantic response cache, with hit-rate/savings observability | ✅ | Cosine similarity over a shared embedding abstraction; hit rate and estimated $ saved surfaced on the Overview page |
+| Cost tracking, per-application budgets + "cheaper model" insight | ✅ | Per-app `daily_cost_budget` with automatic overage alerts, computed live from stored traces, never hardcoded |
+| Alerting with configurable thresholds, Slack-or-generic webhook delivery + dedup | ✅ | Thresholds live in the `alert_rules` table, editable from Settings / `PATCH /alerts/rules/{rule}`; `SENTINEL_ALERT_WEBHOOK_FORMAT=slack` posts directly to a Slack Incoming Webhook |
+| API-key auth with RBAC (read/write/admin) + per-key tenant scoping | ✅ | SHA-256-hashed keys, shown once at creation; a key can optionally be scoped to a single application, restricting its visibility/writes everywhere (traces, metrics, rollouts, applications) |
 | Rate limiting | ✅ | Per-key moving-window limiter |
 | Prometheus metrics + structured logs + correlation IDs | ✅ | `/metrics`, OpenTelemetry tracer configured |
-| Full dashboard (13 pages) | ✅ | Next.js 16, TypeScript strict, Recharts |
+| Full dashboard (15 pages) | ✅ | Next.js 16, TypeScript strict, Recharts |
 | Docker Compose one-command demo | ✅ | Postgres + Redis + migrate + seed + api + worker + frontend |
 | Kubernetes manifests | ⚠️ | Demonstrates the shape; explicitly documents production gaps ([infra README](infrastructure/kubernetes/README.md)) |
 | CI (test/lint/build/security) | ✅ | 4 GitHub Actions workflows |

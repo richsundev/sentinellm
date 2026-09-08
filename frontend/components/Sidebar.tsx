@@ -11,6 +11,7 @@ const NAV_ITEMS: { href: string; label: string; icon: string }[] = [
   { href: "/evaluations", label: "Evaluations", icon: "✓" },
   { href: "/regressions", label: "Regressions", icon: "!" },
   { href: "/routing", label: "Routing", icon: "⇄" },
+  { href: "/rollouts", label: "Rollouts", icon: "⇉" },
   { href: "/models", label: "Models", icon: "◆" },
   { href: "/experiments", label: "Experiments", icon: "⚗" },
   { href: "/prompts", label: "Prompts", icon: "¶" },

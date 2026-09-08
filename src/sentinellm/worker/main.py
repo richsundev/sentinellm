@@ -1,7 +1,8 @@
-"""Worker process entrypoint: runs three concurrent async loops —
-evaluation job consumption, periodic regression detection, and periodic
-alert-rule evaluation — inside a single process. See
-docs/design-decisions.md for why this isn't three separate Celery workers.
+"""Worker process entrypoint: runs five concurrent async loops — evaluation
+job consumption, periodic regression detection, alert-rule evaluation,
+model-health monitoring, and canary-rollout evaluation — inside a single
+process. See docs/design-decisions.md for why this isn't five separate
+Celery workers.
 """
 
 from __future__ import annotations
@@ -19,12 +20,14 @@ from sentinellm.worker.tasks.alerting import evaluate_alert_rules
 from sentinellm.worker.tasks.evaluate import process_evaluation_job
 from sentinellm.worker.tasks.model_health import evaluate_model_health
 from sentinellm.worker.tasks.regression import detect_regressions
+from sentinellm.worker.tasks.rollout import evaluate_rollouts
 
 logger = get_logger(__name__)
 
 _REGRESSION_INTERVAL_S = 60
 _ALERTING_INTERVAL_S = 60
 _MODEL_HEALTH_INTERVAL_S = 60
+_ROLLOUT_INTERVAL_S = 60
 
 
 async def evaluation_consumer_loop(stop_event: asyncio.Event) -> None:
@@ -83,6 +86,18 @@ async def model_health_loop(stop_event: asyncio.Event) -> None:
             await asyncio.wait_for(stop_event.wait(), timeout=_MODEL_HEALTH_INTERVAL_S)
 
 
+async def rollout_loop(stop_event: asyncio.Event) -> None:
+    session_factory = get_sessionmaker()
+    while not stop_event.is_set():
+        async with session_factory() as session:
+            try:
+                await evaluate_rollouts(session)
+            except Exception:
+                logger.exception("rollout_loop_error")
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=_ROLLOUT_INTERVAL_S)
+
+
 async def run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -99,6 +114,7 @@ async def run() -> None:
         regression_loop(stop_event),
         alerting_loop(stop_event),
         model_health_loop(stop_event),
+        rollout_loop(stop_event),
     )
 
 

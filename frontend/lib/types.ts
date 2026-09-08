@@ -351,3 +351,48 @@ export interface Paginated<T> {
 }
 
 export type TimeRange = "1h" | "24h" | "7d" | "30d";
+
+export type RolloutStage = "running" | "paused" | "promoted" | "rolled_back";
+
+export interface Rollout {
+  id: string;
+  application_id: string;
+  incumbent_model: string;
+  challenger_model: string;
+  traffic_pct: number;
+  stage: RolloutStage;
+  quality_floor: number;
+  max_error_rate: number;
+  min_sample_size: number;
+  step_pct: number;
+  max_pct: number;
+  last_evaluated_at: string | null;
+  outcome_reason: string | null;
+  created_at: string;
+}
+
+export interface RolloutArmStats {
+  model: string;
+  request_count: number;
+  error_rate: number;
+  avg_quality: number | null;
+  avg_latency_ms: number;
+  avg_cost: number;
+}
+
+export interface RolloutDetail extends Rollout {
+  incumbent_stats: RolloutArmStats;
+  challenger_stats: RolloutArmStats;
+}
+
+export interface RolloutCreateRequest {
+  application_id: string;
+  incumbent_model: string;
+  challenger_model: string;
+  initial_pct?: number;
+  quality_floor?: number;
+  max_error_rate?: number;
+  min_sample_size?: number;
+  step_pct?: number;
+  max_pct?: number;
+}

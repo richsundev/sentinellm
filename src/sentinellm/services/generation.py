@@ -1,19 +1,20 @@
 """Orchestrates the full request lifecycle for `POST /api/v1/generate`:
 
-retrieval -> reranking -> routing -> semantic cache -> prompt construction ->
-resilient LLM generation (with fallback) -> cost calculation -> persistence
--> async evaluation enqueue.
+retrieval -> reranking -> routing (or an active canary rollout) -> semantic
+cache -> prompt construction -> resilient LLM generation (with fallback) ->
+cost calculation -> persistence -> async evaluation enqueue.
 
 This is the one place all the platform's "showcase" subsystems (router,
-resilient fallback, semantic cache) compose into a single request, and it is
-what `scripts/seed_demo.py` calls repeatedly to generate realistic trace
-history with genuine routing decisions and genuine cache hits — every number
-the dashboard shows comes from this code path actually running, never from
-hand-authored fixtures.
+resilient fallback, semantic cache, rollouts) compose into a single request,
+and it is what `scripts/seed_demo.py` calls repeatedly to generate realistic
+trace history with genuine routing decisions and genuine cache hits — every
+number the dashboard shows comes from this code path actually running,
+never from hand-authored fixtures.
 """
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import asdict
 
@@ -44,6 +45,7 @@ from sentinellm.retrieval.reranker import ScoreJitterReranker
 from sentinellm.retrieval.retriever import Document, EmbeddingRetriever
 from sentinellm.routing.router import ModelCandidate, Router
 from sentinellm.routing.stats import DBModelStatsProvider
+from sentinellm.services.rollouts import get_active_rollout
 
 logger = get_logger(__name__)
 
@@ -129,7 +131,16 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     context_text = "\n".join(d.content for d in retrieved) or (request.system_prompt or "")
 
     routing_decision = None
-    if request.preferred_model:
+    rollout = None
+    rollout_arm: str | None = None
+    if not request.preferred_model:
+        rollout = await get_active_rollout(session, request.application_id)
+
+    if rollout is not None:
+        is_challenger = random.random() < (rollout.traffic_pct / 100.0)
+        rollout_arm = "challenger" if is_challenger else "incumbent"
+        candidate_chain = [rollout.challenger_model if is_challenger else rollout.incumbent_model]
+    elif request.preferred_model:
         candidate_chain = [request.preferred_model, *request.fallback_models]
     else:
         t_start = (time.perf_counter() - t0) * 1000
@@ -277,6 +288,11 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
 
     total_latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
+    trace_metadata = dict(request.metadata)
+    if rollout is not None:
+        trace_metadata["rollout_id"] = rollout.id
+        trace_metadata["rollout_arm"] = rollout_arm
+
     trace = Trace(
         trace_id=new_trace_id(),
         request_id=new_request_id(),
@@ -292,7 +308,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         latency_ms=total_latency_ms,
         estimated_cost=cost,
         retrieved_documents=[d.model_dump() for d in retrieved],
-        trace_metadata=request.metadata,
+        trace_metadata=trace_metadata,
         status=status,
         error=error,
         cache_hit=cache_hit,

@@ -3,7 +3,7 @@
 Table inventory: applications, api_keys, traces, trace_spans, evaluations,
 evaluation_metrics, hallucination_claims, datasets, dataset_records,
 experiments, prompt_versions, models, routing_decisions, regressions, alerts,
-semantic_cache_entries.
+semantic_cache_entries, model_rollouts.
 """
 
 from __future__ import annotations
@@ -361,3 +361,46 @@ class Experiment(Base, TimestampMixin):
 
     git_commit: Mapped[str] = mapped_column(String(40), default="unknown")
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class ModelRollout(Base, TimestampMixin):
+    """A progressive canary rollout of a `challenger_model` against the
+    current `incumbent_model` for one application's un-pinned traffic
+    (requests to `/generate` that don't set `preferred_model` explicitly —
+    see `services.generation.generate`).
+
+    This is the platform's one closed autonomous loop: `traffic_pct` of
+    that traffic is probabilistically routed to the challenger, and
+    `worker.tasks.rollout.evaluate_rollouts` inspects the challenger's real
+    trailing error rate / evaluated quality (and either arm's model-health
+    status) on each pass to step `traffic_pct` up, auto-promote at
+    `max_pct`, or auto-rollback to 0% — with zero human intervention unless
+    `stage` is manually paused/promoted/rolled back via the API.
+
+    A rollout keeps influencing routing for its application even after
+    reaching a terminal `stage` ("promoted" pins traffic at `max_pct`,
+    "rolled_back" pins it at 0%) — that's what makes the outcome durable;
+    only "running" rows are still picked up by the evaluation loop.
+    """
+
+    __tablename__ = "model_rollouts"
+    __table_args__ = (
+        Index("ix_model_rollouts_application_created", "application_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    application_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    incumbent_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    challenger_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    traffic_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    stage: Mapped[str] = mapped_column(String(20), default="running")
+    # running | paused | promoted | rolled_back
+    quality_floor: Mapped[float] = mapped_column(Float, default=0.7)
+    max_error_rate: Mapped[float] = mapped_column(Float, default=0.1)
+    min_sample_size: Mapped[int] = mapped_column(Integer, default=10)
+    step_pct: Mapped[float] = mapped_column(Float, default=10.0)
+    max_pct: Mapped[float] = mapped_column(Float, default=100.0)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    outcome_reason: Mapped[str | None] = mapped_column(Text, default=None)
