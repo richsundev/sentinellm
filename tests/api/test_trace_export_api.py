@@ -71,3 +71,27 @@ async def test_export_empty_result_is_header_only(client: AsyncClient) -> None:
     resp = await client.get("/api/v1/traces/export", params={"application_id": "no-such-app"})
     rows = list(csv.reader(io.StringIO(resp.text)))
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_export_neutralizes_formula_injection_in_prompt_and_tags(
+    client: AsyncClient,
+) -> None:
+    """A prompt/response/tag starting with =, +, -, or @ must not survive
+    into the CSV unescaped — Excel/Sheets evaluates such a leading
+    character as a formula when the export is opened (CWE-1236).
+    """
+    trace_id = await _ingest_trace(client, prompt='=HYPERLINK("http://evil.example","x")')
+    await client.patch(f"/api/v1/traces/{trace_id}/tags", json={"tags": ["=cmd"]})
+
+    resp = await client.get("/api/v1/traces/export")
+    rows = list(csv.reader(io.StringIO(resp.text)))
+    header, *data_rows = rows
+    row = next(r for r in data_rows if r[0] == trace_id)
+
+    prompt_idx = header.index("prompt")
+    tags_idx = header.index("tags")
+    assert row[prompt_idx] == '\'=HYPERLINK("http://evil.example","x")'
+    assert row[tags_idx] == "'=cmd"
+    for value in row:
+        assert not value.startswith(("=", "+", "-", "@"))

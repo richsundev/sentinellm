@@ -97,6 +97,14 @@ async def create_api_key(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "A scoped API key cannot create keys for another application"
         )
+    if scope_of(api_key).ids is not None and not payload.scoped_to_application:
+        # A scoped key must never be able to mint an unscoped one for its own
+        # application — that would hand the caller full cross-tenant access
+        # (scoped_to_application defaults to False), defeating the whole
+        # point of scoping.
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "A scoped API key can only create other scoped keys"
+        )
     plaintext = generate_api_key()
     row = APIKey(
         application_id=payload.application_id,

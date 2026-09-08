@@ -63,6 +63,22 @@ _EXPORT_COLUMNS = [
 ]
 
 
+_FORMULA_TRIGGER_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralizes CSV/formula injection (CWE-1236): a cell starting with
+    `=`/`+`/`-`/`@` (or a leading tab/CR) is interpreted as a formula by
+    Excel/Sheets/LibreOffice when the export is opened, so a caller-supplied
+    prompt/response/tag could exfiltrate other cells or, on older clients,
+    execute code via DDE. Every field written to the export CSV that
+    originates from caller-controlled input goes through this first.
+    """
+    if value.startswith(_FORMULA_TRIGGER_CHARS):
+        return "'" + value
+    return value
+
+
 def _trace_filter_clauses(
     *,
     model: str | None,
@@ -267,21 +283,21 @@ async def export_traces(
             [
                 t.trace_id,
                 t.created_at.isoformat(),
-                t.application_id,
-                t.environment,
-                t.model,
-                t.provider,
+                _csv_safe(t.application_id),
+                _csv_safe(t.environment),
+                _csv_safe(t.model),
+                _csv_safe(t.provider),
                 t.status,
                 t.latency_ms,
                 t.estimated_cost,
                 t.input_tokens,
                 t.output_tokens,
                 t.cache_hit,
-                ";".join(t.tags),
+                _csv_safe(";".join(t.tags)),
                 t.evaluation.overall_quality if t.evaluation else "",
                 t.feedback.rating if t.feedback else "",
-                t.prompt,
-                t.response,
+                _csv_safe(t.prompt),
+                _csv_safe(t.response),
             ]
         )
 

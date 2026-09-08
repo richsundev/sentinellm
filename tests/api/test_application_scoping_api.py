@@ -157,6 +157,38 @@ async def test_scoped_key_cannot_create_key_for_another_application(
 
 
 @pytest.mark.asyncio
+async def test_scoped_key_cannot_mint_an_unscoped_key_for_its_own_application(
+    client: AsyncClient, app
+) -> None:
+    """Regression test: scoped_to_application defaults to False, so a scoped
+    key omitting it when creating a key for its OWN application must be
+    rejected — otherwise it could mint itself a fully unscoped key and
+    escape tenant isolation entirely.
+    """
+    scoped, app_id = await _create_scoped_client(client, app, "scoped-app-10")
+    async with scoped:
+        resp = await scoped.post(
+            "/api/v1/applications/api-keys",
+            json={"application_id": app_id, "name": "escape-attempt"},
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_scoped_key_can_mint_another_scoped_key_for_its_own_application(
+    client: AsyncClient, app
+) -> None:
+    scoped, app_id = await _create_scoped_client(client, app, "scoped-app-11")
+    async with scoped:
+        resp = await scoped.post(
+            "/api/v1/applications/api-keys",
+            json={"application_id": app_id, "name": "sub-key", "scoped_to_application": True},
+        )
+        assert resp.status_code == 201
+        assert resp.json()["scoped_to_application"] is True
+
+
+@pytest.mark.asyncio
 async def test_unscoped_key_default_behavior_is_unrestricted(client: AsyncClient) -> None:
     # scoped_to_application defaults to False, so a normally-created key
     # (as every other test file uses) keeps seeing everything.
