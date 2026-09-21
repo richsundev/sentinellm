@@ -38,6 +38,18 @@ class PromptPromoteRequest(NulStrippingModel):
     quality_pass_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
+class PromptRenderRequest(NulStrippingModel):
+    variables: dict[str, str] = Field(default_factory=dict, max_length=50)
+
+
+class PromptRenderOut(BaseModel):
+    prompt_id: str
+    version: int
+    # None when a placeholder has no value; `missing` says which.
+    rendered: str | None
+    missing: list[str]
+
+
 class PromptPromotionOut(BaseModel):
     promoted: PromptVersionOut
     justifying_experiment_id: str

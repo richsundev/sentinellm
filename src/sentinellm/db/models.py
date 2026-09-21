@@ -3,7 +3,7 @@
 Table inventory: applications, api_keys, traces, trace_spans, evaluations,
 evaluation_metrics, hallucination_claims, datasets, dataset_records,
 experiments, prompt_versions, models, routing_decisions, regressions, alerts,
-semantic_cache_entries, model_rollouts.
+semantic_cache_entries, model_rollouts, prompt_rollouts.
 """
 
 from __future__ import annotations
@@ -409,6 +409,58 @@ class ModelRollout(Base, TimestampMixin):
     application_id: Mapped[str] = mapped_column(String(200), nullable=False)
     incumbent_model: Mapped[str] = mapped_column(String(100), nullable=False)
     challenger_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    traffic_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    stage: Mapped[str] = mapped_column(String(20), default="running")
+    # running | paused | promoted | rolled_back
+    quality_floor: Mapped[float] = mapped_column(Float, default=0.7)
+    max_quality_regression: Mapped[float] = mapped_column(Float, default=0.1)
+    max_error_rate: Mapped[float] = mapped_column(Float, default=0.1)
+    min_sample_size: Mapped[int] = mapped_column(Integer, default=10)
+    step_pct: Mapped[float] = mapped_column(Float, default=10.0)
+    max_pct: Mapped[float] = mapped_column(Float, default=100.0)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    outcome_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class PromptRollout(Base, TimestampMixin):
+    """A progressive canary rollout of a `challenger_version` of one prompt
+    against its `incumbent_version`, for one application's `/generate` traffic
+    that serves that prompt (`prompt_variables` set) without pinning a
+    `prompt_version`.
+
+    It is the model rollout (`ModelRollout`) applied to the other thing that
+    changes an LLM application's behaviour. `worker.tasks.prompt_rollout`
+    judges the challenger's real error rate and evaluated quality against the
+    same guard rails (`services.rollout_policy`) and steps `traffic_pct` up,
+    promotes, or rolls back on its own.
+
+    Scope is the application: the rollout decides which version *this
+    application's* traffic is served and never changes a version's global
+    `status`. Like a model rollout it keeps deciding after a terminal stage
+    ("promoted" pins the challenger, "rolled_back" the incumbent) until a newer
+    rollout for the same prompt supersedes it.
+    """
+
+    __tablename__ = "prompt_rollouts"
+    __table_args__ = (
+        Index("ix_prompt_rollouts_app_prompt_created", "application_id", "prompt_id", "created_at"),
+        Index(
+            "uq_prompt_rollouts_one_active",
+            "application_id",
+            "prompt_id",
+            unique=True,
+            postgresql_where=text("stage IN ('running', 'paused')"),
+            sqlite_where=text("stage IN ('running', 'paused')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    application_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    prompt_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    incumbent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    challenger_version: Mapped[int] = mapped_column(Integer, nullable=False)
     traffic_pct: Mapped[float] = mapped_column(Float, default=0.0)
     stage: Mapped[str] = mapped_column(String(20), default="running")
     # running | paused | promoted | rolled_back

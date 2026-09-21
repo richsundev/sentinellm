@@ -162,6 +162,8 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 | Automatic model health detection | ✅ | A worker loop flips `ModelPricing.status` (healthy/degraded/down) from real trailing error rate — including calls that failed before a fallback answered — and gives a down model another chance (as `degraded`) once its failures age out of the window; a manual `PATCH .../status` pins it against being overridden |
 | Resilient execution (retry + backoff + jitter + fallback chain) | ✅ | Distinguishes retryable vs. terminal errors (e.g. context overflow) |
 | Prompt registry with versioning, status lifecycle + promotion gate | ✅ | draft → testing → production → deprecated; promotion requires a passing experiment (`pass_rate ≥ threshold`) for that exact prompt version |
+| **Prompt serving** | ✅ | `/generate` with `prompt_id` + `prompt_variables` renders the registry template server-side (newest production version, or a pinned `prompt_version`) as the system prompt; the trace records the version and the exact rendered text; `POST /prompts/{id}/versions/{v}/render` previews a template with no model call |
+| **Autonomous prompt canary rollouts** | ✅ | The model canary applied to prompts: an application's traffic that serves a prompt is split between an incumbent and a challenger *version*; the worker steps traffic up, promotes, or rolls back on the same guard rails (`services/rollout_policy.py`), and rolls back at once if the challenger version is deprecated |
 | Trace replay | ✅ | `POST /traces/{id}/replay` resubmits a trace's prompt through `/generate` with an optional model override, for side-by-side comparison |
 | Human feedback + full-text + tag search on traces | ✅ | Thumbs up/down with notes, `?q=` substring search, `?tag=` filtering, CSV export of the filtered result set |
 | On-demand experiment runs (`POST /experiments/run`) | ✅ | Runs the real generate+evaluate pipeline over a dataset, not just seed-script output |
@@ -211,10 +213,12 @@ REGRESSION DETECTED: faithfulness 0.5528 -> 0.5067 (-8.3%, low)
     prompt changed support-answer:v1 -> support-answer:v2
 ```
 
-The seed also leaves a canary rollout in flight (`checkout-assistant`,
-`sentinel-pro` → `sentinel-flash`), whose traffic was really split by
-`/generate`; the worker picks it up and advances it on its own — watch it on
-the **Rollouts** page.
+The seed also leaves two canaries in flight on `checkout-assistant`: a model
+canary (`sentinel-pro` → `sentinel-flash`) and a prompt canary
+(`checkout-answer` v1 → v2, rendered server-side from the registry). Their
+traffic was really split by `/generate`; the worker picks both up and advances
+them on its own — watch them on the **Rollouts** page (Model canaries / Prompt
+canaries tabs).
 
 For metrics, add the optional monitoring stack (Prometheus + Grafana, not part
 of the default footprint):
@@ -271,6 +275,17 @@ curl -s -X POST http://localhost:8000/api/v1/generate \
     "question": "What is your refund policy for annual plans?",
     "dataset_id": "<dataset-id-from-/api/v1/datasets>"
   }' | jq
+
+# Serve a prompt from the registry: the newest production version of
+# "support-answer" is rendered ({{question}} and {{context}} are filled in for
+# you, add your own with prompt_variables) and sent as the system prompt.
+curl -s -X POST http://localhost:8000/api/v1/generate \
+  -H "X-API-Key: demo-api-key" -H "Content-Type: application/json" \
+  -d '{
+    "application_id": "support-bot",
+    "question": "What is your refund policy for annual plans?",
+    "prompt_id": "support-answer", "prompt_variables": {}
+  }' | jq '{prompt_version, rendered: .metadata.rendered_prompt}'
 
 # Or report a trace your own app already generated:
 curl -s -X POST http://localhost:8000/api/v1/traces \

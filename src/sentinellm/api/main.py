@@ -30,6 +30,7 @@ from sentinellm.api.routers import (
     generate,
     metrics,
     models,
+    prompt_rollouts,
     prompts,
     rollouts,
     routing,
@@ -40,6 +41,7 @@ from sentinellm.core.config import get_settings
 from sentinellm.core.logging import configure_logging, get_logger
 from sentinellm.observability.tracing import setup_tracing
 from sentinellm.routing.router import NoHealthyCandidateError
+from sentinellm.services.prompts import PromptNotFoundError, PromptRenderError
 
 logger = get_logger(__name__)
 
@@ -65,6 +67,8 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
     app.add_exception_handler(NoHealthyCandidateError, _no_route_handler)
     app.add_exception_handler(IntegrityError, _conflict_handler)
+    app.add_exception_handler(PromptNotFoundError, _prompt_not_found_handler)
+    app.add_exception_handler(PromptRenderError, _prompt_render_handler)
 
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestSizeLimitMiddleware)
@@ -90,6 +94,7 @@ def create_app() -> FastAPI:
         metrics.router,
         applications.router,
         rollouts.router,
+        prompt_rollouts.router,
     ):
         app.include_router(router)
 
@@ -149,6 +154,16 @@ async def _no_route_handler(_request: Request, exc: Exception) -> JSONResponse:
     floor) is a capacity condition, not a server bug."""
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)}
+    )
+
+
+async def _prompt_not_found_handler(_request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+
+async def _prompt_render_handler(_request: Request, exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(exc)}
     )
 
 

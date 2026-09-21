@@ -16,7 +16,7 @@ src/sentinellm/
   observability/   Prometheus metrics, OpenTelemetry tracing
   api/             FastAPI app, routers, Pydantic schemas, auth, rate limiting
   services/        cross-cutting orchestration (the /generate pipeline, evaluation-pipeline factory)
-  worker/          queue consumer + evaluation/regression/alerting/recovery tasks
+  worker/          queue consumer + evaluation/regression/alerting/recovery/rollout tasks
   sdk/             the client SDK integrating applications use
 frontend/          Next.js dashboard
 infrastructure/    Docker, Kubernetes, Prometheus config

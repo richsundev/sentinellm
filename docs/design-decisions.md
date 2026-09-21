@@ -337,3 +337,55 @@ lock immediately (Postgres drops it with the connection) — verified in
 counted per outcome (`ok` / `error` / `skipped`) in
 `sentinel_worker_loop_runs_total`, so "skipped" is the lock doing its job and
 is visible on the dashboard.
+
+## 13. The registry serves prompts, and prompts get canaries too
+
+**Context.** The prompt registry, the experiment runner and the promotion gate
+were a workflow around something the platform never actually did:
+`/generate` recorded `prompt_id`/`prompt_version` on the trace but never used
+them, so a "promoted" version changed nothing a request saw, and the model
+canary (decision 12's neighbour) could only vary *which model* answered. For
+most LLM applications the prompt changes more often than the model, and is
+just as capable of a silent quality regression.
+
+**Decision.** Two opt-in steps, both reusing machinery that already existed.
+*Serving:* a request that sets `prompt_variables` (even `{}`) has its
+`prompt_id` served — the template of the pinned `prompt_version`, else the
+newest `production` version, is rendered server-side and sent as the system
+prompt. `question` and `context` are filled in from the request; a placeholder
+with no value is a 422, and rendering is a single pass over the template so a
+value can never inject another placeholder. The trace records the version that
+answered and the exact rendered text. Experiments now go through the same path
+(they used to render privately, and then attached the context a second time).
+*Canaries:* `PromptRollout` is `ModelRollout` with prompt versions as the arms.
+The worker's judgment — error rate, absolute quality floor, regression against
+the incumbent over the same window, evidence gated on evaluated sample size —
+was extracted into `services/rollout_policy.py` and both loops call it, so the
+two can't drift in how strict they are.
+
+**Alternatives.** *Always render when `prompt_id` is set*: simplest, but
+`prompt_id` has been a plain label since day one and existing callers send a
+finished `question`; opt-in via `prompt_variables` breaks nobody. *A general
+`Rollout` table with a `kind` column*: one router and one loop, but the arms
+are a model id in one case and an integer version of a named prompt in the
+other; forcing them into shared columns would blur both and put the model
+rollout (the proven path) at risk. *Promoting the winning version globally*:
+a canary run by one application would change what every application is served.
+Instead a rollout is scoped to its application and never touches a version's
+global `status`; the evidence-gated promotion endpoint stays the way to change
+the default.
+
+**Tradeoffs.** Like model rollouts, a finished prompt rollout keeps pinning its
+application (promoted → challenger, rolled back → incumbent) until a newer one
+supersedes it, so an application can stay on a version that is no longer the
+global default. Arm attribution uses the trace's recorded `prompt_version`, so
+a caller who pins a version explicitly still lands in that arm's evidence
+window. Templates are plain `{{name}}` substitution, not a templating language:
+no conditionals or loops, which is deliberate until a real need appears.
+
+**Consequences.** A prompt change can be shipped to 10% of an application's
+traffic, judged on real evaluations, and rolled back with no operator — and the
+trace page shows which version answered, whether it was a canary arm, and the
+text the model saw. `sentinel_prompt_rollout_decisions_total` and a
+`prompt_rollout_auto_rollback` alert make the loop visible, and it is one more
+pass in the worker (`prompt_rollout`), under the same advisory lock as the rest.

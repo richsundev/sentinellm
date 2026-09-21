@@ -81,6 +81,12 @@ groups:
         annotations:
           summary: "A canary rollout was automatically rolled back in the last 15 minutes"
 
+      - alert: SentinelPromptRolloutAutoRolledBack
+        expr: sum(increase(sentinel_prompt_rollout_decisions_total{decision="rollback"}[15m])) > 0
+        labels: { severity: medium }
+        annotations:
+          summary: "A prompt canary was automatically rolled back in the last 15 minutes"
+
       - alert: SentinelModelFlaggedDown
         expr: sum by (model) (increase(sentinel_model_status_changes_total{status="down"}[15m])) > 0
         labels: { severity: high }

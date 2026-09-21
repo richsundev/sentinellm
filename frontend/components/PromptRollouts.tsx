@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
@@ -8,55 +8,24 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { ScoreBar } from "@/components/ScoreBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ErrorState, SkeletonTable, EmptyState } from "@/components/StateViews";
-import { formatCost, formatDate, formatMs, formatPercent } from "@/lib/format";
-import type { Rollout, RolloutArmStats } from "@/lib/types";
 import {
   ActionButton,
   LabeledField,
   STAGE_TONE,
   Stat,
 } from "@/components/RolloutParts";
-import { PromptRollouts } from "@/components/PromptRollouts";
+import { formatCost, formatDate, formatMs, formatPercent } from "@/lib/format";
+import type { PromptArmStats, PromptRollout } from "@/lib/types";
 
-export default function RolloutsPage() {
-  const [tab, setTab] = useState<"models" | "prompts">("models");
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-1 border-b border-base-700">
-        {(
-          [
-            ["models", "Model canaries"],
-            ["prompts", "Prompt canaries"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            className={
-              tab === key
-                ? "border-b-2 border-accent px-3 py-2 text-xs text-accent"
-                : "px-3 py-2 text-xs text-base-400 hover:text-base-200"
-            }
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      {tab === "models" ? <ModelRollouts /> : <PromptRollouts />}
-    </div>
-  );
-}
-
-function ModelRollouts() {
+/** The "Prompt canaries" tab: progressive rollouts of one prompt version over another. */
+export function PromptRollouts() {
   const { data, loading, error, refetch } = useFetch(
-    () => api.listRollouts({ limit: 100 }),
+    () => api.listPromptRollouts({ limit: 100 }),
     [],
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const columns: Column<Rollout>[] = [
+  const columns: Column<PromptRollout>[] = [
     {
       key: "application_id",
       header: "Application",
@@ -68,12 +37,12 @@ function ModelRollouts() {
       sortValue: (r) => r.application_id,
     },
     {
-      key: "models",
-      header: "Incumbent → Challenger",
+      key: "versions",
+      header: "Prompt · incumbent → challenger",
       render: (r) => (
         <span className="font-mono text-xs text-base-300">
-          {r.incumbent_model} <span className="text-base-500">→</span>{" "}
-          {r.challenger_model}
+          {r.prompt_id} v{r.incumbent_version}{" "}
+          <span className="text-base-500">→</span> v{r.challenger_version}
         </span>
       ),
     },
@@ -110,24 +79,24 @@ function ModelRollouts() {
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <div className="space-y-4 lg:col-span-2">
-        <StartRolloutPanel onCreated={refetch} />
+        <StartPromptRolloutPanel onCreated={refetch} />
 
         {error && <ErrorState message={error} onRetry={refetch} />}
         {!error && (loading || !data) && <SkeletonTable rows={4} cols={5} />}
         {!error && data && data.items.length === 0 && (
           <EmptyState
-            title="No rollouts yet"
-            message="Start one above to progressively shift an application's traffic from an incumbent model to a challenger, monitored automatically."
+            title="No prompt canaries yet"
+            message="Start one above to progressively serve a new prompt version to an application's traffic, judged automatically against the current one."
           />
         )}
         {!error && data && data.items.length > 0 && (
-          <DataTable<Rollout>
+          <DataTable<PromptRollout>
             columns={columns}
             rows={data.items}
             rowKey={(r) => r.id}
             onRowClick={(r) => setSelectedId(r.id)}
-            emptyTitle="No rollouts"
-            emptyMessage="No rollouts match the current filters."
+            emptyTitle="No prompt rollouts"
+            emptyMessage="No prompt rollouts match the current filters."
             defaultSortKey="created_at"
           />
         )}
@@ -135,12 +104,12 @@ function ModelRollouts() {
 
       <div className="lg:sticky lg:top-0 lg:h-fit">
         {selectedId ? (
-          <RolloutDetailPanel rolloutId={selectedId} onChanged={refetch} />
+          <PromptRolloutDetail rolloutId={selectedId} onChanged={refetch} />
         ) : (
           <Panel title="Rollout detail">
             <p className="text-xs text-base-400">
-              Select a rollout from the list to see live incumbent vs.
-              challenger stats and controls.
+              Select a rollout to see live stats for each prompt version, and
+              controls.
             </p>
           </Panel>
         )}
@@ -149,64 +118,100 @@ function ModelRollouts() {
   );
 }
 
-function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
+const INPUT =
+  "w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed";
+
+function StartPromptRolloutPanel({ onCreated }: { onCreated: () => void }) {
   const [applicationId, setApplicationId] = useState("");
-  const [incumbentModel, setIncumbentModel] = useState("");
-  const [challengerModel, setChallengerModel] = useState("");
+  const [promptId, setPromptId] = useState("");
+  const [incumbent, setIncumbent] = useState("");
+  const [challenger, setChallenger] = useState("");
   const [initialPct, setInitialPct] = useState("10");
   const [qualityFloor, setQualityFloor] = useState("0.7");
-  const [maxQualityRegression, setMaxQualityRegression] = useState("0.1");
+  const [maxDrop, setMaxDrop] = useState("0.1");
   const [maxErrorRate, setMaxErrorRate] = useState("0.1");
-  const [minSampleSize, setMinSampleSize] = useState("10");
+  const [minSample, setMinSample] = useState("10");
   const [stepPct, setStepPct] = useState("10");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
-  const { data: models } = useFetch(() => api.listModels({ limit: 200 }), []);
+  const { data: prompts } = useFetch(() => api.listPrompts({ limit: 500 }), []);
+  const promptIds = useMemo(
+    () =>
+      Array.from(
+        new Set((prompts?.items ?? []).map((p) => p.prompt_id)),
+      ).sort(),
+    [prompts],
+  );
+  const versions = useMemo(
+    () =>
+      (prompts?.items ?? [])
+        .filter((p) => p.prompt_id === promptId)
+        .map((p) => p.version)
+        .sort((a, b) => b - a),
+    [prompts, promptId],
+  );
 
   const canSubmit =
     applicationId.trim() &&
-    incumbentModel &&
-    challengerModel &&
-    incumbentModel !== challengerModel;
+    promptId &&
+    incumbent &&
+    challenger &&
+    incumbent !== challenger;
 
   async function handleCreate() {
     if (!canSubmit) return;
     setCreating(true);
     setCreateError(null);
     try {
-      await api.createRollout({
+      await api.createPromptRollout({
         application_id: applicationId.trim(),
-        incumbent_model: incumbentModel,
-        challenger_model: challengerModel,
+        prompt_id: promptId,
+        incumbent_version: Number(incumbent),
+        challenger_version: Number(challenger),
         initial_pct: Number(initialPct),
         quality_floor: Number(qualityFloor),
-        max_quality_regression: Number(maxQualityRegression),
+        max_quality_regression: Number(maxDrop),
         max_error_rate: Number(maxErrorRate),
-        min_sample_size: Number(minSampleSize),
+        min_sample_size: Number(minSample),
         step_pct: Number(stepPct),
       });
       setApplicationId("");
       onCreated();
     } catch (err) {
       setCreateError(
-        err instanceof ApiError ? err.message : "Failed to start rollout",
+        err instanceof ApiError ? err.message : "Failed to start the rollout",
       );
     } finally {
       setCreating(false);
     }
   }
 
-  const modelOptions = models?.items ?? [];
+  const number = (
+    value: string,
+    set: (v: string) => void,
+    props: Record<string, string>,
+  ) => (
+    <input
+      type="number"
+      {...props}
+      value={value}
+      onChange={(e) => set(e.target.value)}
+      disabled={creating}
+      className={INPUT}
+    />
+  );
 
   return (
     <Panel
-      title="Start a canary rollout"
+      title="Start a prompt canary"
       action={
         <span className="text-[10px] text-base-500">
-          progressively shifts an application&apos;s un-pinned traffic;
-          auto-advances, auto-promotes, or auto-rolls-back from real trailing
-          quality/error-rate
+          serves the challenger version to a share of an application&apos;s
+          requests that use this prompt (
+          <code className="font-mono">prompt_variables</code> set, no pinned
+          version); auto-advances, promotes, or rolls back from real quality and
+          error rate
         </span>
       }
     >
@@ -217,96 +222,76 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
             onChange={(e) => setApplicationId(e.target.value)}
             placeholder="application_id"
             disabled={creating}
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
+            className={INPUT}
           />
         </LabeledField>
-        <LabeledField label="Incumbent model">
-          <ModelSelect
-            value={incumbentModel}
-            onChange={setIncumbentModel}
-            options={modelOptions.map((m) => m.id)}
+        <LabeledField label="Prompt">
+          <select
+            aria-label="Prompt"
+            value={promptId}
+            onChange={(e) => {
+              setPromptId(e.target.value);
+              setIncumbent("");
+              setChallenger("");
+            }}
             disabled={creating}
+            className={INPUT}
+          >
+            <option value="">select…</option>
+            {promptIds.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+        </LabeledField>
+        <LabeledField label="Incumbent version">
+          <VersionSelect
+            label="Incumbent version"
+            value={incumbent}
+            onChange={setIncumbent}
+            options={versions}
+            disabled={creating || !promptId}
           />
         </LabeledField>
-        <LabeledField label="Challenger model">
-          <ModelSelect
-            value={challengerModel}
-            onChange={setChallengerModel}
-            options={modelOptions.map((m) => m.id)}
-            disabled={creating}
+        <LabeledField label="Challenger version">
+          <VersionSelect
+            label="Challenger version"
+            value={challenger}
+            onChange={setChallenger}
+            options={versions}
+            disabled={creating || !promptId}
           />
         </LabeledField>
         <LabeledField label="Initial %">
-          <input
-            type="number"
-            min="0"
-            max="100"
-            step="1"
-            value={initialPct}
-            onChange={(e) => setInitialPct(e.target.value)}
-            disabled={creating}
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
-          />
+          {number(initialPct, setInitialPct, {
+            min: "0",
+            max: "100",
+            step: "1",
+          })}
         </LabeledField>
         <LabeledField label="Quality floor">
-          <input
-            type="number"
-            min="0"
-            max="1"
-            step="0.05"
-            value={qualityFloor}
-            onChange={(e) => setQualityFloor(e.target.value)}
-            disabled={creating}
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
-          />
+          {number(qualityFloor, setQualityFloor, {
+            min: "0",
+            max: "1",
+            step: "0.05",
+          })}
         </LabeledField>
         <LabeledField label="Max drop vs incumbent">
-          <input
-            type="number"
-            min="0"
-            max="1"
-            step="0.05"
-            value={maxQualityRegression}
-            onChange={(e) => setMaxQualityRegression(e.target.value)}
-            disabled={creating}
-            title="How far below the incumbent's own quality (same window) the challenger may fall before rollback"
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
-          />
+          {number(maxDrop, setMaxDrop, { min: "0", max: "1", step: "0.05" })}
         </LabeledField>
         <LabeledField label="Max error rate">
-          <input
-            type="number"
-            min="0"
-            max="1"
-            step="0.05"
-            value={maxErrorRate}
-            onChange={(e) => setMaxErrorRate(e.target.value)}
-            disabled={creating}
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
-          />
+          {number(maxErrorRate, setMaxErrorRate, {
+            min: "0",
+            max: "1",
+            step: "0.05",
+          })}
         </LabeledField>
         <LabeledField label="Min sample size">
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={minSampleSize}
-            onChange={(e) => setMinSampleSize(e.target.value)}
-            disabled={creating}
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
-          />
+          {number(minSample, setMinSample, { min: "1", step: "1" })}
         </LabeledField>
         <LabeledField label="Step %">
-          <input
-            type="number"
-            min="1"
-            max="100"
-            step="1"
-            value={stepPct}
-            onChange={(e) => setStepPct(e.target.value)}
-            disabled={creating}
-            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
-          />
+          {number(stepPct, setStepPct, { min: "1", max: "100", step: "1" })}
         </LabeledField>
       </div>
       <button
@@ -315,7 +300,7 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
         disabled={!canSubmit || creating}
         className="mt-3 rounded border border-accent/40 bg-accent/10 px-3 py-1.5 text-xs text-accent hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {creating ? "Starting…" : "Start rollout"}
+        {creating ? "Starting…" : "Start prompt canary"}
       </button>
       {createError && (
         <p className="mt-2 text-xs text-red-400">{createError}</p>
@@ -324,35 +309,38 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
   );
 }
 
-function ModelSelect({
+function VersionSelect({
+  label,
   value,
   onChange,
   options,
   disabled,
 }: {
+  label: string;
   value: string;
   onChange: (v: string) => void;
-  options: string[];
+  options: number[];
   disabled?: boolean;
 }) {
   return (
     <select
+      aria-label={label}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       disabled={disabled}
-      className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
+      className={INPUT}
     >
       <option value="">select…</option>
-      {options.map((id) => (
-        <option key={id} value={id}>
-          {id}
+      {options.map((v) => (
+        <option key={v} value={String(v)}>
+          v{v}
         </option>
       ))}
     </select>
   );
 }
 
-function RolloutDetailPanel({
+function PromptRolloutDetail({
   rolloutId,
   onChanged,
 }: {
@@ -364,7 +352,7 @@ function RolloutDetailPanel({
     loading,
     error,
     refetch,
-  } = useFetch(() => api.getRollout(rolloutId), [rolloutId]);
+  } = useFetch(() => api.getPromptRollout(rolloutId), [rolloutId]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
 
@@ -388,7 +376,7 @@ function RolloutDetailPanel({
 
   return (
     <Panel
-      title={rollout.application_id}
+      title={`${rollout.application_id} · ${rollout.prompt_id}`}
       action={
         <StatusBadge status={rollout.stage} tone={STAGE_TONE[rollout.stage]} />
       }
@@ -399,14 +387,14 @@ function RolloutDetailPanel({
             Traffic to challenger
           </div>
           <ScoreBar
-            label={rollout.challenger_model}
+            label={`v${rollout.challenger_version}`}
             score={rollout.traffic_pct / 100}
           />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <ArmStatsCard title="Incumbent" stats={rollout.incumbent_stats} />
-          <ArmStatsCard title="Challenger" stats={rollout.challenger_stats} />
+          <ArmCard title="Incumbent" stats={rollout.incumbent_stats} />
+          <ArmCard title="Challenger" stats={rollout.challenger_stats} />
         </div>
 
         <div className="rounded border border-base-700 bg-base-900 p-2.5 text-xs">
@@ -429,7 +417,7 @@ function RolloutDetailPanel({
         <div className="flex flex-wrap gap-2">
           {rollout.stage === "running" && (
             <ActionButton
-              onClick={() => runAction(api.pauseRollout)}
+              onClick={() => runAction(api.pausePromptRollout)}
               disabled={acting}
             >
               Pause
@@ -437,7 +425,7 @@ function RolloutDetailPanel({
           )}
           {rollout.stage === "paused" && (
             <ActionButton
-              onClick={() => runAction(api.resumeRollout)}
+              onClick={() => runAction(api.resumePromptRollout)}
               disabled={acting}
             >
               Resume
@@ -446,14 +434,14 @@ function RolloutDetailPanel({
           {(rollout.stage === "running" || rollout.stage === "paused") && (
             <>
               <ActionButton
-                onClick={() => runAction(api.promoteRollout)}
+                onClick={() => runAction(api.promotePromptRollout)}
                 disabled={acting}
                 tone="ok"
               >
                 Promote now
               </ActionButton>
               <ActionButton
-                onClick={() => runAction(api.rollbackRollout)}
+                onClick={() => runAction(api.rollbackPromptRollout)}
                 disabled={acting}
                 tone="err"
               >
@@ -468,19 +456,13 @@ function RolloutDetailPanel({
   );
 }
 
-function ArmStatsCard({
-  title,
-  stats,
-}: {
-  title: string;
-  stats: RolloutArmStats;
-}) {
+function ArmCard({ title, stats }: { title: string; stats: PromptArmStats }) {
   return (
     <div className="rounded border border-base-700 bg-base-900 p-3">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-xs font-medium text-base-200">{title}</span>
         <span className="font-mono text-[10px] text-base-500">
-          {stats.model}
+          v{stats.version}
         </span>
       </div>
       <dl className="space-y-1 text-xs">

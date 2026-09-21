@@ -87,6 +87,8 @@ export interface Trace {
   metadata: Record<string, unknown>;
   status: TraceStatus;
   error: string | null;
+  prompt_id: string | null;
+  prompt_version: number | null;
   created_at: string;
   spans: Span[];
   evaluation: Evaluation | null;
@@ -391,6 +393,53 @@ export interface RolloutCreateRequest {
   application_id: string;
   incumbent_model: string;
   challenger_model: string;
+  initial_pct?: number;
+  quality_floor?: number;
+  max_quality_regression?: number;
+  max_error_rate?: number;
+  min_sample_size?: number;
+  step_pct?: number;
+  max_pct?: number;
+}
+
+export interface PromptRollout {
+  id: string;
+  application_id: string;
+  prompt_id: string;
+  incumbent_version: number;
+  challenger_version: number;
+  traffic_pct: number;
+  stage: RolloutStage;
+  quality_floor: number;
+  max_quality_regression: number;
+  max_error_rate: number;
+  min_sample_size: number;
+  step_pct: number;
+  max_pct: number;
+  last_evaluated_at: string | null;
+  outcome_reason: string | null;
+  created_at: string;
+}
+
+export interface PromptArmStats {
+  version: number;
+  request_count: number;
+  error_rate: number;
+  avg_quality: number | null;
+  avg_latency_ms: number;
+  avg_cost: number;
+}
+
+export interface PromptRolloutDetail extends PromptRollout {
+  incumbent_stats: PromptArmStats;
+  challenger_stats: PromptArmStats;
+}
+
+export interface PromptRolloutCreateRequest {
+  application_id: string;
+  prompt_id: string;
+  incumbent_version: number;
+  challenger_version: number;
   initial_pct?: number;
   quality_floor?: number;
   max_quality_regression?: number;

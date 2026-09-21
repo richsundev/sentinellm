@@ -13,6 +13,9 @@ workflow.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +24,66 @@ from sentinellm.db.models import Experiment, PromptVersion
 
 class PromptNotFoundError(ValueError):
     pass
+
+
+class PromptRenderError(ValueError):
+    """A template can't be rendered from the variables supplied — the caller's
+    to fix, so it surfaces as a 422, not a 500."""
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def template_placeholders(template: str) -> list[str]:
+    """The `{{name}}` placeholders in a template, in first-appearance order."""
+    return list(dict.fromkeys(_PLACEHOLDER_RE.findall(template)))
+
+
+def render_template(template: str, values: Mapping[str, str], *, strict: bool = True) -> str:
+    """Substitutes `{{name}}` placeholders.
+
+    One pass over the *template*: substituting variable-by-variable would
+    re-scan text already inserted, so a document containing `{{question}}`
+    would be expanded into the question (and a caller could smuggle a
+    placeholder into another variable's value).
+
+    `strict` raises `PromptRenderError` naming every placeholder with no value;
+    otherwise an unknown placeholder is left as written.
+    """
+    if strict:
+        missing = [name for name in template_placeholders(template) if name not in values]
+        if missing:
+            raise PromptRenderError(
+                "missing value(s) for template variable(s): " + ", ".join(missing)
+            )
+    return _PLACEHOLDER_RE.sub(lambda m: values.get(m.group(1), m.group(0)), template)
+
+
+async def resolve_prompt_version(
+    session: AsyncSession, prompt_id: str, version: int | None = None
+) -> PromptVersion:
+    """The version to serve: `version` if given, else the newest version whose
+    status is `production`."""
+    stmt = select(PromptVersion).where(PromptVersion.prompt_id == prompt_id)
+    if version is not None:
+        row = (
+            await session.execute(stmt.where(PromptVersion.version == version))
+        ).scalar_one_or_none()
+        if row is None:
+            raise PromptNotFoundError(f"prompt '{prompt_id}' v{version} not found")
+        return row
+    row = (
+        await session.execute(
+            stmt.where(PromptVersion.status == "production")
+            .order_by(PromptVersion.version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise PromptNotFoundError(
+            f"prompt '{prompt_id}' has no production version — promote one, or pass prompt_version"
+        )
+    return row
 
 
 class PromotionGateError(ValueError):

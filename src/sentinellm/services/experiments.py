@@ -18,8 +18,6 @@ natural upgrade if experiment datasets grow into the hundreds of records.
 
 from __future__ import annotations
 
-import re
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -39,11 +37,9 @@ from sentinellm.db.models import (
 )
 from sentinellm.services.evaluation_factory import get_evaluation_pipeline
 from sentinellm.services.generation import generate
+from sentinellm.services.prompts import render_template
 
 logger = get_logger(__name__)
-
-_TEMPLATE_VARS = ("context", "question")
-_PLACEHOLDER_RE = re.compile(r"\{\{(" + "|".join(_TEMPLATE_VARS) + r")\}\}")
 
 
 class ExperimentInputError(ValueError):
@@ -52,15 +48,9 @@ class ExperimentInputError(ValueError):
 
 
 def render_prompt_template(template: str, *, context: str, question: str) -> str:
-    """Minimal `{{var}}` substitution — matches the placeholder style every
-    prompt template in this project uses. A general templating engine
-    (Jinja2) is the natural upgrade if templates grow beyond context/question.
-    """
-    values = {"context": context, "question": question}
-    # One pass over the *template*: substituting variable-by-variable would
-    # re-scan text already inserted, so a context containing `{{question}}`
-    # had it expanded into the question.
-    return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
+    """`{{context}}` / `{{question}}` substitution (other placeholders are left
+    as written — see `services.prompts.render_template`)."""
+    return render_template(template, {"context": context, "question": question}, strict=False)
 
 
 async def run_experiment(session: AsyncSession, request: ExperimentRunRequest) -> Experiment:
@@ -97,9 +87,6 @@ async def run_experiment(session: AsyncSession, request: ExperimentRunRequest) -
     pipeline = get_evaluation_pipeline()
     traces: list[Trace] = []
     for record in records:
-        rendered_prompt = render_prompt_template(
-            prompt_version.template, context=record.context, question=record.question
-        )
         retrieved = (
             [RetrievedDocumentIn(doc_id=record.id, content=record.context, score=1.0, rank=0)]
             if record.context
@@ -108,12 +95,15 @@ async def run_experiment(session: AsyncSession, request: ExperimentRunRequest) -
         gen_request = GenerateRequest(
             application_id=request.application_id,
             question=record.question,
-            system_prompt=rendered_prompt,
             retrieved_documents=retrieved,
             preferred_model=request.model,
             use_cache=False,
+            # Served like production traffic: `/generate` renders the template
+            # with the record's question and context (once — passing it as a
+            # system prompt *and* attaching the context duplicated it).
             prompt_id=request.prompt_id,
             prompt_version=request.prompt_version,
+            prompt_variables={},
             evaluate=False,  # evaluated inline below, not via the async queue
             metadata={"experiment": request.name},
         )

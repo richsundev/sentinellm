@@ -75,6 +75,11 @@ ROLLOUT_DECISIONS_TOTAL = Counter(
     "Automatic canary rollout decisions",
     ["decision"],  # advance | promote | rollback
 )
+PROMPT_ROLLOUT_DECISIONS_TOTAL = Counter(
+    "sentinel_prompt_rollout_decisions_total",
+    "Automatic prompt canary rollout decisions",
+    ["decision"],  # advance | promote | rollback
+)
 ALERTS_FIRED_TOTAL = Counter(
     "sentinel_alerts_fired_total", "Alerts fired by the worker", ["rule", "severity"]
 )

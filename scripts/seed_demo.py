@@ -32,6 +32,9 @@ What gets seeded:
      whose traffic was really split by `/generate`'s rollout logic and
      evaluated inline. The worker picks it up and advances (or rolls back)
      the rollout on its own once the evidence is past its grace period.
+ 11. A prompt canary on the same application: a second version of the
+     "checkout-answer" prompt served to a share of its traffic, rendered
+     server-side from the registry and judged by the worker the same way.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sentinellm.api.schemas.generate import GenerateRequest
+from sentinellm.api.schemas.prompt_rollout import PromptRolloutCreate
 from sentinellm.api.schemas.rollout import RolloutCreate
 from sentinellm.api.security import generate_api_key, hash_api_key, key_display_prefix
 from sentinellm.core.config import get_settings
@@ -65,6 +69,7 @@ from sentinellm.db.session import get_sessionmaker, init_models
 from sentinellm.pricing.catalog import DEFAULT_MODEL_CATALOG
 from sentinellm.services.evaluation_factory import get_evaluation_pipeline
 from sentinellm.services.generation import generate as run_generate
+from sentinellm.services.prompt_rollouts import create_prompt_rollout
 from sentinellm.services.rollouts import create_rollout
 from sentinellm.worker.tasks.alerting import evaluate_alert_rules
 from sentinellm.worker.tasks.regression import detect_regressions_for_application
@@ -429,6 +434,78 @@ async def _seed_rollout_showcase(
     return traces
 
 
+async def _seed_prompt_rollout_showcase(
+    session: AsyncSession, application_id: str, dataset_id: str, records: list[dict]
+) -> list[Trace]:
+    """A prompt canary in flight, next to the model canary above: a shorter
+    "friendly" version of the checkout prompt is served to 30% of the
+    application's traffic. Requests pin a model so only the prompt varies, and
+    go through the real `/generate` path — the registry template is rendered
+    server-side and the split is the rollout's own."""
+    session.add_all(
+        [
+            PromptVersion(
+                prompt_id="checkout-answer",
+                version=1,
+                status="production",
+                author="platform-team",
+                template="You are a precise checkout assistant. Answer strictly using the "
+                "context.\nContext:\n{{context}}\n\nQuestion: {{question}}",
+                variables=["context", "question"],
+            ),
+            PromptVersion(
+                prompt_id="checkout-answer",
+                version=2,
+                status="testing",
+                author="growth-team",
+                template="You are a friendly, concise checkout assistant. Question: {{question}} "
+                "(context: {{context}})",
+                variables=["context", "question"],
+                prompt_metadata={"note": "shorter; being canaried against v1"},
+            ),
+        ]
+    )
+    await session.flush()
+    rollout = await create_prompt_rollout(
+        session,
+        PromptRolloutCreate(
+            application_id=application_id,
+            prompt_id="checkout-answer",
+            incumbent_version=1,
+            challenger_version=2,
+            initial_pct=30,
+            step_pct=20,
+            min_sample_size=8,
+            # The mock models' quality sits well below the production defaults, so
+            # the demo gates are set relative to what they actually score.
+            quality_floor=0.2,
+            max_quality_regression=0.25,
+        ),
+    )
+
+    traces: list[Trace] = []
+    for i in range(40):
+        req = GenerateRequest(
+            application_id=application_id,
+            question=records[i % len(records)]["question"],
+            dataset_id=dataset_id,
+            preferred_model="mock:sentinel-flash",
+            prompt_id="checkout-answer",
+            prompt_variables={},
+            use_cache=False,
+            evaluate=False,
+        )
+        traces.append(await run_generate(session, req))
+    await session.flush()
+
+    on_challenger = sum(1 for t in traces if t.prompt_version == rollout.challenger_version)
+    print(
+        f"  prompt canary showcase: 'checkout-answer' v1 -> v2 at {rollout.traffic_pct:.0f}%: "
+        f"{on_challenger}/{len(traces)} requests were served the challenger prompt"
+    )
+    return traces
+
+
 async def seed(force: bool = False) -> None:
     await init_models()
     session_factory = get_sessionmaker()
@@ -478,7 +555,16 @@ async def seed(force: bool = False) -> None:
         await _evaluate_all(session, rollout_traces)
         await session.commit()
 
-        total_traces = len(routing_traces) + len(era1) + len(era2) + len(rollout_traces)
+        checkout_app_id = rollout_traces[0].application_id
+        prompt_traces = await _seed_prompt_rollout_showcase(
+            session, checkout_app_id, dataset.id, records
+        )
+        await _evaluate_all(session, prompt_traces)
+        await session.commit()
+
+        total_traces = (
+            len(routing_traces) + len(era1) + len(era2) + len(rollout_traces) + len(prompt_traces)
+        )
         print(
             f"\nDone. Seeded {total_traces} traces with real evaluations, "
             f"{len(regressions)} regression(s), and {len(alerts)} alert(s)."

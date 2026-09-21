@@ -45,7 +45,18 @@ router = APIRouter(prefix="/api/v1/traces", tags=["traces"])
 # Written by `generate()` to describe one particular execution. A replay is a
 # new execution, so copying these would attribute the original's failures and
 # rollout arm to it.
-_EXECUTION_METADATA = frozenset({"failed_attempts", "rollout_id", "rollout_arm", "replay_of"})
+_EXECUTION_METADATA = frozenset(
+    {
+        "failed_attempts",
+        "rollout_id",
+        "rollout_arm",
+        "replay_of",
+        "rendered_prompt",
+        "prompt_variables",
+        "prompt_rollout_id",
+        "prompt_rollout_arm",
+    }
+)
 
 _LOAD_OPTS = (
     selectinload(Trace.spans),
@@ -90,6 +101,13 @@ def _csv_safe(value: str) -> str:
     if value.startswith(_FORMULA_TRIGGER_CHARS):
         return "'" + value
     return value
+
+
+def _replay_prompt_variables(original: Trace) -> dict[str, str] | None:
+    variables = original.trace_metadata.get("prompt_variables")
+    if original.prompt_id and isinstance(variables, dict):
+        return {str(k): str(v) for k, v in variables.items()}
+    return None
 
 
 def _like_contains(value: str) -> str:
@@ -444,6 +462,9 @@ async def replay_trace(
             use_cache=payload.use_cache,
             prompt_id=original.prompt_id,
             prompt_version=payload.prompt_version or original.prompt_version,
+            # A trace whose prompt was served from the registry is replayed the
+            # same way (re-rendered, so a different version really changes it).
+            prompt_variables=_replay_prompt_variables(original),
             metadata={
                 **{
                     k: v for k, v in original.trace_metadata.items() if k not in _EXECUTION_METADATA

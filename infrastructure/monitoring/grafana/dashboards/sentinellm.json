@@ -931,7 +931,7 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "Canary rollout decisions",
+      "title": "Canary rollout decisions (model + prompt)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -950,8 +950,17 @@
             "uid": "prometheus"
           },
           "expr": "sum by (decision) (increase(sentinel_rollout_decisions_total[5m]))",
-          "legendFormat": "{{decision}}",
+          "legendFormat": "model {{decision}}",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (decision) (increase(sentinel_prompt_rollout_decisions_total[5m]))",
+          "legendFormat": "prompt {{decision}}",
+          "refId": "B"
         }
       ],
       "fieldConfig": {

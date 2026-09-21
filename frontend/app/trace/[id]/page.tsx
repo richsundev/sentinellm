@@ -134,6 +134,22 @@ export default function TraceDetailPage() {
               {trace.application_id} · {trace.environment} · {trace.model} ({trace.provider}) ·{" "}
               {formatDate(trace.created_at)}
             </div>
+            {trace.prompt_id && (
+              <div className="mt-1 text-xs text-base-400">
+                prompt <span className="font-mono">{trace.prompt_id}</span>
+                {trace.prompt_version !== null && (
+                  <span className="font-mono"> v{trace.prompt_version}</span>
+                )}
+                {typeof trace.metadata.prompt_rollout_arm === "string" && (
+                  <span className="ml-1.5">
+                    <StatusBadge
+                      status={`canary ${trace.metadata.prompt_rollout_arm}`}
+                      tone="info"
+                    />
+                  </span>
+                )}
+              </div>
+            )}
             {trace.error && (
               <div className="mt-1 text-xs text-err">{trace.error}</div>
             )}
@@ -168,6 +184,18 @@ export default function TraceDetailPage() {
               </div>
               <pre className="whitespace-pre-wrap rounded bg-base-900 p-3 text-xs text-base-300">
                 {trace.system_prompt}
+              </pre>
+            </div>
+          )}
+          {typeof trace.metadata.rendered_prompt === "string" && (
+            <div className="mb-3">
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-base-400">
+                Rendered prompt
+                {trace.prompt_version !== null && ` (v${trace.prompt_version})`} — what the model
+                was given as its system prompt
+              </div>
+              <pre className="whitespace-pre-wrap rounded bg-base-900 p-3 text-xs text-base-300">
+                {trace.metadata.rendered_prompt}
               </pre>
             </div>
           )}

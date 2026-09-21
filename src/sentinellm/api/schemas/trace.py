@@ -170,6 +170,8 @@ class TraceOut(BaseModel):
     metadata: dict[str, Any] = Field(validation_alias="trace_metadata")
     status: str
     error: str | None
+    prompt_id: str | None
+    prompt_version: int | None
     created_at: datetime
     spans: list[SpanOut] = Field(default_factory=list)
     evaluation: EvaluationOut | None = None

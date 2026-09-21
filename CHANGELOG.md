@@ -6,6 +6,24 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Prompt serving and autonomous prompt canaries** (decision 13). `/generate`
+  with `prompt_id` + `prompt_variables` renders the registry template
+  server-side — the pinned `prompt_version`, else the newest production
+  version — and sends it as the system prompt; the trace records the version
+  and the exact rendered text (`GET /traces` now returns `prompt_id` /
+  `prompt_version`), and replay re-renders (so a different version really
+  changes the answer). `POST /prompts/{id}/versions/{v}/render` previews a
+  template; new versions derive/validate their declared variables. Experiments
+  are served through the same path, which also removes a bug where the context
+  reached the model twice.
+  `/api/v1/prompt-rollouts` (Rollouts page → *Prompt canaries*) splits an
+  application's prompt traffic between an incumbent and a challenger version;
+  a worker loop (`prompt_rollout`) advances, promotes, or rolls back on the
+  same guard rails as the model canary — now shared in
+  `services/rollout_policy.py` — and rolls back immediately if the challenger
+  version is deprecated. New migration `c8f4a2d91e07`, metric
+  `sentinel_prompt_rollout_decisions_total`, alert
+  `SentinelPromptRolloutAutoRolledBack`, and a prompt canary in the demo seed.
 - **Autonomous canary rollouts** (`/api/v1/rollouts`, Rollouts page): traffic
   for an application's un-pinned `/generate` requests is split between an
   incumbent and a challenger model, and a worker loop advances, promotes, or

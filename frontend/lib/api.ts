@@ -20,6 +20,9 @@ import type {
   OverviewMetrics,
   Paginated,
   PromptPromotionResult,
+  PromptRollout,
+  PromptRolloutCreateRequest,
+  PromptRolloutDetail,
   PromptVersion,
   Regression,
   Rollout,
@@ -302,6 +305,31 @@ export const api = {
     mutate<Rollout>(`/rollouts/${encodeURIComponent(rolloutId)}/promote`, { method: "POST" }),
   rollbackRollout: (rolloutId: string) =>
     mutate<Rollout>(`/rollouts/${encodeURIComponent(rolloutId)}/rollback`, { method: "POST" }),
+
+  // Progressive prompt-version canary rollouts (Rollouts page, "Prompt canaries" tab).
+  listPromptRollouts: (
+    params: { application_id?: string; prompt_id?: string; stage?: string; limit?: number } = {}
+  ) => request<Paginated<PromptRollout>>("/prompt-rollouts", params),
+  getPromptRollout: (rolloutId: string) =>
+    request<PromptRolloutDetail>(`/prompt-rollouts/${encodeURIComponent(rolloutId)}`),
+  createPromptRollout: (payload: PromptRolloutCreateRequest) =>
+    mutate<PromptRollout>("/prompt-rollouts", { method: "POST", body: payload }),
+  pausePromptRollout: (rolloutId: string) =>
+    mutate<PromptRollout>(`/prompt-rollouts/${encodeURIComponent(rolloutId)}/pause`, {
+      method: "POST",
+    }),
+  resumePromptRollout: (rolloutId: string) =>
+    mutate<PromptRollout>(`/prompt-rollouts/${encodeURIComponent(rolloutId)}/resume`, {
+      method: "POST",
+    }),
+  promotePromptRollout: (rolloutId: string) =>
+    mutate<PromptRollout>(`/prompt-rollouts/${encodeURIComponent(rolloutId)}/promote`, {
+      method: "POST",
+    }),
+  rollbackPromptRollout: (rolloutId: string) =>
+    mutate<PromptRollout>(`/prompt-rollouts/${encodeURIComponent(rolloutId)}/rollback`, {
+      method: "POST",
+    }),
 };
 
 export type Api = typeof api;

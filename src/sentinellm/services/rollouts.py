@@ -7,10 +7,11 @@ importing anything router-layer.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,21 +115,16 @@ class ArmWindow:
         return sum(self.quality_scores) / len(self.quality_scores)
 
 
-async def load_arm_window(
+async def load_window(
     session: AsyncSession,
+    conditions: Sequence[ColumnElement[bool]],
     *,
-    application_id: str,
-    model: str,
     since: datetime,
     until: datetime | None = None,
 ) -> ArmWindow:
-    """Traces for one arm with `since < created_at <= until` (no upper bound
-    when `until` is omitted)."""
-    stmt = select(Trace).where(
-        Trace.application_id == application_id,
-        Trace.model == model,
-        Trace.created_at > since,
-    )
+    """Traces matching `conditions` with `since < created_at <= until` (no upper
+    bound when `until` is omitted), plus their evaluated-quality scores."""
+    stmt = select(Trace).where(*conditions, Trace.created_at > since)
     if until is not None:
         stmt = stmt.where(Trace.created_at <= until)
     traces = list((await session.execute(stmt)).scalars().all())
@@ -146,6 +142,23 @@ async def load_arm_window(
         .all()
     )
     return ArmWindow(traces=traces, quality_scores=list(scores))
+
+
+async def load_arm_window(
+    session: AsyncSession,
+    *,
+    application_id: str,
+    model: str,
+    since: datetime,
+    until: datetime | None = None,
+) -> ArmWindow:
+    """One model arm's traffic for an application (see `load_window`)."""
+    return await load_window(
+        session,
+        [Trace.application_id == application_id, Trace.model == model],
+        since=since,
+        until=until,
+    )
 
 
 async def compute_arm_stats(

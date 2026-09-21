@@ -9,6 +9,8 @@ from sentinellm.api.schemas.common import Page
 from sentinellm.api.schemas.prompt import (
     PromptPromoteRequest,
     PromptPromotionOut,
+    PromptRenderOut,
+    PromptRenderRequest,
     PromptStatusUpdate,
     PromptVersionCreate,
     PromptVersionOut,
@@ -18,6 +20,9 @@ from sentinellm.services.prompts import (
     PromotionGateError,
     PromptNotFoundError,
     promote_prompt_version,
+    render_template,
+    resolve_prompt_version,
+    template_placeholders,
 )
 
 router = APIRouter(prefix="/api/v1/prompts", tags=["prompts"])
@@ -32,6 +37,15 @@ async def create_prompt_version(
     """Creates the next version for `prompt_id` (version numbers are
     monotonically assigned per prompt_id, never reused)."""
     require_unscoped(api_key)
+    used = template_placeholders(payload.template)
+    undeclared = [name for name in used if payload.variables and name not in payload.variables]
+    if undeclared:
+        # It could only ever fail later, at serve time, for every caller.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "template uses undeclared variable(s): " + ", ".join(undeclared),
+        )
+    variables = payload.variables or used
     latest = (
         await db.execute(
             select(func.max(PromptVersion.version)).where(
@@ -44,7 +58,7 @@ async def create_prompt_version(
         prompt_id=payload.prompt_id,
         version=next_version,
         template=payload.template,
-        variables=payload.variables,
+        variables=variables,
         status=payload.status,
         author=payload.author,
         prompt_metadata=payload.metadata,
@@ -99,6 +113,29 @@ async def update_prompt_status(
     row.status = payload.status
     await db.flush()
     return PromptVersionOut.model_validate(row)
+
+
+@router.post(
+    "/{prompt_id}/versions/{version}/render",
+    response_model=PromptRenderOut,
+    dependencies=[Depends(RequireRead)],
+)
+async def render_prompt_version(
+    prompt_id: str,
+    version: int,
+    payload: PromptRenderRequest,
+    db: AsyncSession = Depends(get_db),
+) -> PromptRenderOut:
+    """Preview a version's template with the given variables. No model is
+    called and nothing is stored, so it's safe for an editor UI to call on
+    every keystroke. Unlike `/generate`, `question` and `context` are not
+    filled in for you."""
+    row = await resolve_prompt_version(db, prompt_id, version)
+    missing = [n for n in template_placeholders(row.template) if n not in payload.variables]
+    rendered = None if missing else render_template(row.template, payload.variables)
+    return PromptRenderOut(
+        prompt_id=prompt_id, version=row.version, rendered=rendered, missing=missing
+    )
 
 
 @router.post("/{prompt_id}/versions/{version}/promote", response_model=PromptPromotionOut)

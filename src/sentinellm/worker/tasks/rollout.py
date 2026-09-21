@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sentinellm.core.logging import get_logger
 from sentinellm.db.models import Alert, ModelPricing, ModelRollout
 from sentinellm.observability.metrics import ROLLOUT_DECISIONS_TOTAL
+from sentinellm.services.rollout_policy import Guards, judge_challenger, next_traffic
 from sentinellm.services.rollouts import load_arm_window
 from sentinellm.worker.tasks.alerting import publish_alert
 
@@ -145,61 +146,33 @@ async def evaluate_rollouts(session: AsyncSession) -> list[ModelRollout]:
             until=until,
         )
 
-        error_rate = challenger.error_rate
-        challenger_quality = (
-            challenger.avg_quality
-            if challenger.evaluated_count >= rollout.min_sample_size
-            else None
+        verdict = judge_challenger(
+            challenger,
+            incumbent,
+            Guards(
+                quality_floor=rollout.quality_floor,
+                max_quality_regression=rollout.max_quality_regression,
+                max_error_rate=rollout.max_error_rate,
+                min_sample_size=rollout.min_sample_size,
+            ),
         )
-        incumbent_quality = (
-            incumbent.avg_quality if incumbent.evaluated_count >= rollout.min_sample_size else None
-        )
-        n = challenger.request_count
-
-        rollback: tuple[str, float, float] | None = None
-        if error_rate > rollout.max_error_rate:
-            rollback = (
-                f"challenger error_rate={error_rate:.0%} over {n} requests "
-                f"(max {rollout.max_error_rate:.0%})",
-                error_rate,
-                rollout.max_error_rate,
-            )
-        elif challenger_quality is not None and challenger_quality < rollout.quality_floor:
-            rollback = (
-                f"challenger avg_quality={challenger_quality:.2f} over {n} requests "
-                f"(floor {rollout.quality_floor:.2f})",
-                challenger_quality,
-                rollout.quality_floor,
-            )
-        elif (
-            challenger_quality is not None
-            and incumbent_quality is not None
-            and challenger_quality < incumbent_quality - rollout.max_quality_regression
-        ):
-            allowed = incumbent_quality - rollout.max_quality_regression
-            rollback = (
-                f"challenger avg_quality={challenger_quality:.2f} regressed more than "
-                f"{rollout.max_quality_regression:.2f} below the incumbent's "
-                f"{incumbent_quality:.2f} over the same window",
-                challenger_quality,
-                allowed,
-            )
 
         rollout.last_evaluated_at = until
-        if rollback is not None:
-            reason, current, threshold = rollback
-            _rollback(rollout, reason)
-            await _fire_rollback_alert(session, rollout, current=current, threshold=threshold)
+        if verdict.violation is not None:
+            _rollback(rollout, verdict.violation.reason)
+            await _fire_rollback_alert(
+                session,
+                rollout,
+                current=verdict.violation.current,
+                threshold=verdict.violation.threshold,
+            )
             decisions.append("rollback")
         else:
-            rollout.traffic_pct = min(rollout.max_pct, rollout.traffic_pct + rollout.step_pct)
-            quality_note = (
-                f", avg_quality={challenger_quality:.2f}" if challenger_quality is not None else ""
+            rollout.traffic_pct, reached_ceiling = next_traffic(
+                rollout.traffic_pct, rollout.step_pct, rollout.max_pct
             )
-            evidence = (
-                f"{n} healthy challenger requests (error_rate={error_rate:.0%}{quality_note})"
-            )
-            if rollout.traffic_pct >= rollout.max_pct:
+            evidence = verdict.evidence()
+            if reached_ceiling:
                 rollout.stage = "promoted"
                 rollout.outcome_reason = f"promoted to {rollout.traffic_pct:.0f}% after {evidence}"
                 decisions.append("promote")

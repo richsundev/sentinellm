@@ -14,6 +14,7 @@ never from hand-authored fixtures.
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from dataclasses import asdict
@@ -48,6 +49,8 @@ from sentinellm.retrieval.retriever import Document, EmbeddingRetriever
 from sentinellm.routing.router import ModelCandidate, NoHealthyCandidateError, Router
 from sentinellm.routing.stats import DBModelStatsProvider
 from sentinellm.security.pii import redact_documents, redact_pii
+from sentinellm.services.prompt_rollouts import choose_arm, get_latest_prompt_rollout
+from sentinellm.services.prompts import render_template, resolve_prompt_version
 from sentinellm.services.rollouts import get_active_rollout
 
 logger = get_logger(__name__)
@@ -173,8 +176,56 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         mark("retrieval", t_start, retrieval_ms, documents_found=len(docs))
         mark("reranking", t_start + retrieval_ms, rerank_ms, documents_reranked=len(docs))
 
-    context_text = "\n".join(d.content for d in retrieved) or (request.system_prompt or "")
-    system_content = _system_content(request.system_prompt, retrieved)
+    docs_text = "\n".join(d.content for d in retrieved)
+    context_text = docs_text or (request.system_prompt or "")
+
+    served_prompt_version = request.prompt_version
+    rendered_prompt: str | None = None
+    prompt_rollout = None
+    prompt_arm: str | None = None
+    if request.prompt_variables is not None and request.prompt_id:
+        t_start = (time.perf_counter() - t0) * 1000
+        t_render = time.perf_counter()
+        requested_version = request.prompt_version
+        if requested_version is None:
+            # No version pinned: an application-level canary of this prompt, if
+            # there is one, decides which version this request is served.
+            prompt_rollout = await get_latest_prompt_rollout(
+                session, request.application_id, request.prompt_id
+            )
+            if prompt_rollout is not None:
+                requested_version, prompt_arm = choose_arm(prompt_rollout)
+        prompt_row = await resolve_prompt_version(session, request.prompt_id, requested_version)
+        served_prompt_version = prompt_row.version
+        rendered_prompt = render_template(
+            prompt_row.template,
+            {"question": request.question, "context": docs_text, **request.prompt_variables},
+        )
+        system_content = (
+            f"{request.system_prompt}\n\n{rendered_prompt}"
+            if request.system_prompt
+            else rendered_prompt
+        )
+        mark(
+            "prompt_render",
+            t_start,
+            (time.perf_counter() - t_render) * 1000,
+            prompt_id=request.prompt_id,
+            version=served_prompt_version,
+        )
+        # What shaped the answer besides the question: the caller's system
+        # prompt, *which* template, the caller's own variables, and the
+        # documents. (The rendered text itself contains the question, so it
+        # can't be the key — every rephrasing would then miss.)
+        cache_context_key = context_key_for(
+            request.system_prompt,
+            f"prompt:{request.prompt_id}@{served_prompt_version}",
+            json.dumps(request.prompt_variables, sort_keys=True),
+            docs_text,
+        )
+    else:
+        system_content = _system_content(request.system_prompt, retrieved)
+        cache_context_key = context_key_for(system_content)
 
     routing_decision = None
     rollout = None
@@ -238,7 +289,6 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         settings.cache_similarity_threshold,
         settings.cache_ttl_seconds,
     )
-    cache_context_key = context_key_for(system_content)
     redact = settings.pii_redaction_enabled
     cache_hit = False
     similarity_score: float | None = None
@@ -354,9 +404,23 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     trace_metadata = dict(request.metadata)
     if failed_attempts:
         trace_metadata["failed_attempts"] = failed_attempts
+    if rendered_prompt is not None and request.prompt_variables is not None:
+        # Recorded so the trace shows exactly what the model was given, and so a
+        # replay can re-render (possibly with another version).
+        trace_metadata["rendered_prompt"] = (
+            redact_pii(rendered_prompt) if redact else rendered_prompt
+        )
+        trace_metadata["prompt_variables"] = (
+            {k: redact_pii(v) for k, v in request.prompt_variables.items()}
+            if redact
+            else dict(request.prompt_variables)
+        )
     if rollout is not None:
         trace_metadata["rollout_id"] = rollout.id
         trace_metadata["rollout_arm"] = rollout_arm
+    if prompt_rollout is not None:
+        trace_metadata["prompt_rollout_id"] = prompt_rollout.id
+        trace_metadata["prompt_rollout_arm"] = prompt_arm
 
     trace = Trace(
         trace_id=trace_public_id,
@@ -387,7 +451,7 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         cache_hit=cache_hit,
         similarity_score=similarity_score,
         prompt_id=request.prompt_id,
-        prompt_version=request.prompt_version,
+        prompt_version=served_prompt_version,
         evaluation_status="pending" if (request.evaluate and status == "ok") else "skipped",
     )
     trace.spans = spans
