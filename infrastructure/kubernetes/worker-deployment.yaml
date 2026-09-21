@@ -11,10 +11,26 @@ spec:
   template:
     metadata:
       labels: { app: sentinel-worker }
+      # Pod-annotation scrape discovery (the common Prometheus Kubernetes
+      # convention) — every replica serves its own /metrics on 9100.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: worker
           image: ghcr.io/OWNER/sentinellm-worker:latest
+          ports:
+            - name: metrics
+              containerPort: 9100
+          # The metrics server starts before any loop, so this only proves the
+          # process is up — per-loop staleness is what the
+          # SentinelWorkerLoopStalled alert is for.
+          livenessProbe:
+            httpGet: { path: /metrics, port: metrics }
+            initialDelaySeconds: 15
+            periodSeconds: 20
           envFrom:
             - configMapRef: { name: sentinel-config }
             - secretRef: { name: sentinel-secrets }
@@ -39,9 +55,13 @@ spec:
       resource:
         name: cpu
         target: { type: Utilization, averageUtilization: 75 }
-  # A queue-depth-based scaling metric (via a Prometheus adapter watching
-  # sentinel_queue_depth) would react to burst evaluation backlogs far
-  # faster than CPU utilization — noted as a follow-up in
+  # A queue-depth-based scaling metric would react to burst evaluation
+  # backlogs far faster than CPU utilization. The worker now exports
+  # `sentinel_queue_depth`; what's still missing is the prometheus-adapter
+  # rule that turns it into a custom metric for this HPA — noted in
   # infrastructure/kubernetes/README.md rather than implemented here, since
-  # it requires a metrics-server + custom-metrics-adapter this repo doesn't
-  # ship.
+  # it needs a custom-metrics adapter this repo doesn't ship.
+  #
+  # Scaling out is safe with respect to the periodic loops: each pass takes a
+  # Postgres advisory lock (docs/design-decisions.md, decision 12), so extra
+  # replicas add evaluation throughput without double-applying a rollout step.

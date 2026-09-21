@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sentinellm.core.config import get_settings
 from sentinellm.core.logging import get_logger
 from sentinellm.db.models import Alert, AlertRuleConfig, Application, Evaluation, Trace
+from sentinellm.observability.metrics import ALERTS_FIRED_TOTAL
 
 logger = get_logger(__name__)
 
@@ -122,12 +123,19 @@ async def _already_alerted(
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
-async def deliver_alert_webhook(alert: Alert) -> None:
-    """Posts a fired `Alert` to `SENTINEL_ALERT_WEBHOOK_URL`, if configured
-    — shared by `_fire` (the five global threshold rules + the per-app cost
-    budget check) and `worker.tasks.rollout` (auto-rollback alerts), so
-    every autonomous decision the platform makes notifies the same way.
+async def publish_alert(alert: Alert) -> None:
+    """Everything that happens once an `Alert` row exists: count it for
+    Prometheus and notify the webhook. Shared by `_fire` (the five global
+    threshold rules + the per-app cost budget check) and
+    `worker.tasks.rollout` (auto-rollback alerts), so every autonomous
+    decision the platform makes is reported the same way.
     """
+    ALERTS_FIRED_TOTAL.labels(rule=alert.rule, severity=alert.severity).inc()
+    await deliver_alert_webhook(alert)
+
+
+async def deliver_alert_webhook(alert: Alert) -> None:
+    """Posts a fired `Alert` to `SENTINEL_ALERT_WEBHOOK_URL`, if configured."""
     settings = get_settings()
     if not settings.alert_webhook_url:
         return
@@ -176,7 +184,7 @@ async def _fire(
     )
     session.add(alert)
     await session.flush()
-    await deliver_alert_webhook(alert)
+    await publish_alert(alert)
     return alert
 
 

@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     api_port: int = 8000
     rate_limit_per_minute: int = 120
 
+    # Worker process: the API's `/metrics` can't see anything recorded in the
+    # worker (evaluation scores, loop health, queue depth), so the worker
+    # serves its own. 0 disables it.
+    worker_metrics_port: int = 9100
+    # Cadence of the regression / alerting / model-health / rollout loops.
+    worker_interval_seconds: float = 60.0
+
     demo_api_key: str = "demo-api-key"
 
     otel_exporter_otlp_endpoint: str | None = None

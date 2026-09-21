@@ -14,15 +14,26 @@ class RolloutCreate(BaseModel):
     challenger_model: str
     initial_pct: float = Field(default=10.0, ge=0, le=100)
     quality_floor: float = Field(default=0.7, ge=0, le=1)
+    max_quality_regression: float = Field(
+        default=0.1,
+        ge=0,
+        le=1,
+        description=(
+            "How far below the incumbent's own average quality (measured over the same "
+            "window) the challenger may fall before it is rolled back"
+        ),
+    )
     max_error_rate: float = Field(default=0.1, ge=0, le=1)
     min_sample_size: int = Field(default=10, ge=1)
     step_pct: float = Field(default=10.0, gt=0, le=100)
     max_pct: float = Field(default=100.0, gt=0, le=100)
 
     @model_validator(mode="after")
-    def _distinct_models(self) -> RolloutCreate:
+    def _consistent(self) -> RolloutCreate:
         if self.incumbent_model == self.challenger_model:
             raise ValueError("incumbent_model and challenger_model must differ")
+        if self.initial_pct > self.max_pct:
+            raise ValueError("initial_pct cannot exceed max_pct")
         return self
 
 
@@ -35,6 +46,7 @@ class RolloutOut(BaseModel):
     traffic_pct: float
     stage: RolloutStage
     quality_floor: float
+    max_quality_regression: float
     max_error_rate: float
     min_sample_size: int
     step_pct: float

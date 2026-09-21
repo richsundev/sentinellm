@@ -27,6 +27,11 @@ What gets seeded:
   8. One regression-detection pass and one alert-rule pass.
   9. Two Experiment rows summarizing the two regression-showcase eras with
      real aggregate metrics.
+ 10. A second application ("checkout-assistant") with a canary rollout
+     already in flight — a cheaper challenger model against the incumbent —
+     whose traffic was really split by `/generate`'s rollout logic and
+     evaluated inline. The worker picks it up and advances (or rolls back)
+     the rollout on its own once the evidence is past its grace period.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sentinellm.api.schemas.generate import GenerateRequest
+from sentinellm.api.schemas.rollout import RolloutCreate
 from sentinellm.api.security import generate_api_key, hash_api_key, key_display_prefix
 from sentinellm.core.config import get_settings
 from sentinellm.core.git import get_git_commit
@@ -59,12 +65,14 @@ from sentinellm.db.session import get_sessionmaker, init_models
 from sentinellm.pricing.catalog import DEFAULT_MODEL_CATALOG
 from sentinellm.services.evaluation_factory import get_evaluation_pipeline
 from sentinellm.services.generation import generate as run_generate
+from sentinellm.services.rollouts import create_rollout
 from sentinellm.worker.tasks.alerting import evaluate_alert_rules
 from sentinellm.worker.tasks.regression import detect_regressions_for_application
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATASET_PATH = REPO_ROOT / "datasets" / "support_bench_v1.jsonl"
 APPLICATION_NAME = "support-bot"
+CHECKOUT_APPLICATION_NAME = "checkout-assistant"
 
 _COMPLEX_QUESTIONS = [
     "Analyze the trade-offs between our current caching architecture and a distributed "
@@ -248,7 +256,6 @@ async def _run_routing_showcase(
             application_id=app_id,
             question=cache_demo_question,
             preferred_model="mock:sentinel-flash",
-            use_router=False,
             use_cache=True,
             dataset_id=dataset_id,
             prompt_id="support-answer",
@@ -274,7 +281,6 @@ async def _run_regression_showcase(
             application_id=app_id,
             question=record["question"],
             preferred_model="mock:sentinel-pro",
-            use_router=False,
             use_cache=False,
             dataset_id=dataset_id,
             prompt_id="support-answer",
@@ -291,7 +297,6 @@ async def _run_regression_showcase(
             application_id=app_id,
             question=record["question"],
             preferred_model="mock:sentinel-nano",
-            use_router=False,
             use_cache=False,
             dataset_id=dataset_id,
             prompt_id="support-answer",
@@ -370,6 +375,60 @@ async def _seed_experiments(
     print("  seeded 2 experiments comparing the regression-showcase eras")
 
 
+async def _seed_rollout_showcase(
+    session: AsyncSession, dataset_id: str, records: list[dict]
+) -> list[Trace]:
+    """A canary in flight: swap the expensive incumbent for a cheaper
+    challenger on an application whose requests don't pin a model. The
+    traffic below goes through the real `/generate` path, so which arm each
+    request landed on is the rollout's own probabilistic split, not a
+    fixture.
+    """
+    app_row = Application(
+        name=CHECKOUT_APPLICATION_NAME,
+        description="Fictional checkout help assistant — canary rollout demo (demo data)",
+    )
+    session.add(app_row)
+    await session.flush()
+
+    rollout = await create_rollout(
+        session,
+        RolloutCreate(
+            application_id=app_row.id,
+            incumbent_model="mock:sentinel-pro",
+            challenger_model="mock:sentinel-flash",
+            initial_pct=30,
+            step_pct=20,
+            min_sample_size=8,
+            # The mock models' quality sits well below the production
+            # defaults (0.7), so the demo gates are set relative to what
+            # they actually score.
+            quality_floor=0.3,
+            max_quality_regression=0.25,
+        ),
+    )
+
+    traces: list[Trace] = []
+    for i in range(48):
+        req = GenerateRequest(
+            application_id=app_row.id,
+            question=records[i % len(records)]["question"],
+            dataset_id=dataset_id,
+            use_cache=False,
+            evaluate=False,
+        )
+        traces.append(await run_generate(session, req))
+    await session.flush()
+
+    on_challenger = sum(1 for t in traces if t.model == rollout.challenger_model)
+    print(
+        f"  rollout showcase: '{CHECKOUT_APPLICATION_NAME}' canary "
+        f"{rollout.incumbent_model} -> {rollout.challenger_model} at {rollout.traffic_pct:.0f}%: "
+        f"{on_challenger}/{len(traces)} requests landed on the challenger"
+    )
+    return traces
+
+
 async def seed(force: bool = False) -> None:
     await init_models()
     session_factory = get_sessionmaker()
@@ -415,7 +474,11 @@ async def seed(force: bool = False) -> None:
         await _seed_experiments(session, dataset.id, era1, era2)
         await session.commit()
 
-        total_traces = len(routing_traces) + len(era1) + len(era2)
+        rollout_traces = await _seed_rollout_showcase(session, dataset.id, records)
+        await _evaluate_all(session, rollout_traces)
+        await session.commit()
+
+        total_traces = len(routing_traces) + len(era1) + len(era2) + len(rollout_traces)
         print(
             f"\nDone. Seeded {total_traces} traces with real evaluations, "
             f"{len(regressions)} regression(s), and {len(alerts)} alert(s)."

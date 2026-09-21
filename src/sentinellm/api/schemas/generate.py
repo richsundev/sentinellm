@@ -6,6 +6,12 @@ from pydantic import BaseModel, Field
 
 from sentinellm.api.schemas.trace import RetrievedDocumentIn
 
+_USE_ROUTER_DEPRECATION = (
+    "Has no effect. Model selection is: `preferred_model` if set; otherwise the "
+    "application's canary rollout split, if one exists; otherwise the router. "
+    "Set `preferred_model` to bypass routing."
+)
+
 
 class GenerateRequest(BaseModel):
     application_id: str
@@ -17,7 +23,11 @@ class GenerateRequest(BaseModel):
     top_k: int = 3
     preferred_model: str | None = None
     fallback_models: list[str] = Field(default_factory=list)
-    use_router: bool = True
+    use_router: bool = Field(
+        default=True,
+        description=_USE_ROUTER_DEPRECATION,
+        deprecated=_USE_ROUTER_DEPRECATION,
+    )
     use_cache: bool = True
     prompt_id: str | None = None
     prompt_version: int | None = None

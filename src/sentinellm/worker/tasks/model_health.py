@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.core.logging import get_logger
 from sentinellm.db.models import ModelPricing, Trace
+from sentinellm.observability.metrics import MODEL_STATUS_CHANGES_TOTAL
 
 logger = get_logger(__name__)
 
@@ -46,6 +47,7 @@ async def evaluate_model_health(session: AsyncSession) -> list[ModelPricing]:
     )
 
     changed: list[ModelPricing] = []
+    transitions: list[tuple[str, str]] = []
     for row in auto_managed:
         model_traces = traces_by_model.get(row.id)
         if model_traces is None or len(model_traces) < _MIN_SAMPLE:
@@ -64,10 +66,15 @@ async def evaluate_model_health(session: AsyncSession) -> list[ModelPricing]:
         )
 
         if row.status != new_status or row.status_reason != reason:
+            if row.status != new_status:
+                transitions.append((row.id, new_status))
             row.status = new_status
             row.status_reason = reason
             changed.append(row)
 
     if changed:
         await session.commit()
+        # A refreshed reason on an unchanged status isn't a transition.
+        for model_id, status in transitions:
+            MODEL_STATUS_CHANGES_TOTAL.labels(model=model_id, status=status).inc()
     return changed

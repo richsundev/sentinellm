@@ -362,6 +362,7 @@ export interface Rollout {
   traffic_pct: number;
   stage: RolloutStage;
   quality_floor: number;
+  max_quality_regression: number;
   max_error_rate: number;
   min_sample_size: number;
   step_pct: number;
@@ -391,6 +392,7 @@ export interface RolloutCreateRequest {
   challenger_model: string;
   initial_pct?: number;
   quality_floor?: number;
+  max_quality_regression?: number;
   max_error_rate?: number;
   min_sample_size?: number;
   step_pct?: number;

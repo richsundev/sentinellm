@@ -2,25 +2,53 @@
 
 Runs on the same cadence as alerting/regression/model-health. For every
 `ModelRollout` still in `stage="running"`, inspects the challenger's real
-traffic (and both arms' model-health status) since the last pass and either
-steps `traffic_pct` up, auto-promotes at `max_pct`, or auto-rolls-back to
-0% — the one place routing, live evaluation, model health, and alerting
+traffic (and both arms' model-health status) since the last decision and
+either steps `traffic_pct` up, auto-promotes at `max_pct`, or auto-rolls-back
+to 0% — the one place routing, live evaluation, model health, and alerting
 all close the loop without an operator in it. See `db/models.ModelRollout`
 for the full design rationale.
+
+How a pass decides
+------------------
+* **Evidence window.** `(last_decision, now - grace]`. The cursor
+  (`last_evaluated_at`) only moves when a decision is made, so a low-traffic
+  rollout keeps accumulating challenger requests across passes until it has
+  `min_sample_size` of them — it doesn't discard thin windows.
+* **Grace period.** Evaluations are produced asynchronously by the worker
+  queue, so the newest traces are still unevaluated. Excluding the last
+  `_EVALUATION_GRACE` keeps "not evaluated *yet*" from being mistaken for
+  "no quality evidence".
+* **Gates, in order:** either arm's model flagged down (immediate, needs no
+  evidence) → challenger error rate over `max_error_rate` → challenger
+  quality under the absolute `quality_floor` → challenger quality more than
+  `max_quality_regression` below the *incumbent's own* quality over the same
+  window. The quality gates only apply once the arm has `min_sample_size`
+  *evaluated* traces; with less, the pass judges on error rate alone rather
+  than acting on one or two noisy scores. The relative gate additionally
+  needs the incumbent to have that much evidence.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.core.logging import get_logger
-from sentinellm.db.models import Alert, Evaluation, ModelPricing, ModelRollout, Trace
-from sentinellm.worker.tasks.alerting import deliver_alert_webhook
+from sentinellm.db.models import Alert, ModelPricing, ModelRollout
+from sentinellm.observability.metrics import ROLLOUT_DECISIONS_TOTAL
+from sentinellm.services.rollouts import load_arm_window
+from sentinellm.worker.tasks.alerting import publish_alert
 
 logger = get_logger(__name__)
+
+_EVALUATION_GRACE = timedelta(seconds=15)
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes even for timezone-aware columns."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _rollback(rollout: ModelRollout, reason: str) -> None:
@@ -42,26 +70,36 @@ async def _fire_rollback_alert(
     alert = Alert(
         rule="rollout_auto_rollback",
         current_value=round(current, 4),
-        threshold=threshold,
+        threshold=round(threshold, 4),
         severity="high",
         affected_service=f"rollout:{rollout.application_id}",
         affected_model=rollout.challenger_model,
     )
     session.add(alert)
     await session.flush()
-    await deliver_alert_webhook(alert)
+    await publish_alert(alert)
 
 
 async def evaluate_rollouts(session: AsyncSession) -> list[ModelRollout]:
+    # Row-locked for the pass: an operator's pause/promote/rollback on the
+    # same row either finishes first (and this pass then sees the new stage)
+    # or waits for this commit. `skip_locked` means a rollout an operator is
+    # mid-way through changing is simply left to the next pass.
     rollouts = (
-        (await session.execute(select(ModelRollout).where(ModelRollout.stage == "running")))
+        (
+            await session.execute(
+                select(ModelRollout)
+                .where(ModelRollout.stage == "running")
+                .with_for_update(skip_locked=True)
+            )
+        )
         .scalars()
         .all()
     )
     changed: list[ModelRollout] = []
+    decisions: list[str] = []
 
     for rollout in rollouts:
-        since = rollout.last_evaluated_at or rollout.created_at
         now = datetime.now(UTC)
 
         challenger_pricing = await session.get(ModelPricing, rollout.challenger_model)
@@ -79,74 +117,101 @@ async def evaluate_rollouts(session: AsyncSession) -> list[ModelRollout]:
             )
             await _fire_rollback_alert(session, rollout, current=1.0, threshold=0.0)
             changed.append(rollout)
+            decisions.append("rollback")
             continue
 
-        traces = (
-            (
-                await session.execute(
-                    select(Trace).where(
-                        Trace.application_id == rollout.application_id,
-                        Trace.model == rollout.challenger_model,
-                        Trace.created_at > since,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        rollout.last_evaluated_at = now
-
-        if len(traces) < rollout.min_sample_size:
+        since = _aware(rollout.last_evaluated_at or rollout.created_at)
+        until = now - _EVALUATION_GRACE
+        if until <= since:
             continue
 
-        error_count = sum(1 for t in traces if t.status == "error")
-        error_rate = error_count / len(traces)
-
-        trace_ids = [t.id for t in traces]
-        evaluations = (
-            (await session.execute(select(Evaluation).where(Evaluation.trace_id.in_(trace_ids))))
-            .scalars()
-            .all()
+        challenger = await load_arm_window(
+            session,
+            application_id=rollout.application_id,
+            model=rollout.challenger_model,
+            since=since,
+            until=until,
         )
-        avg_quality = (
-            sum(e.overall_quality for e in evaluations) / len(evaluations) if evaluations else None
+        if challenger.request_count < rollout.min_sample_size:
+            # Not enough evidence yet — leave the cursor where it is so these
+            # requests still count toward the next pass.
+            continue
+
+        incumbent = await load_arm_window(
+            session,
+            application_id=rollout.application_id,
+            model=rollout.incumbent_model,
+            since=since,
+            until=until,
         )
 
+        error_rate = challenger.error_rate
+        challenger_quality = (
+            challenger.avg_quality
+            if challenger.evaluated_count >= rollout.min_sample_size
+            else None
+        )
+        incumbent_quality = (
+            incumbent.avg_quality if incumbent.evaluated_count >= rollout.min_sample_size else None
+        )
+        n = challenger.request_count
+
+        rollback: tuple[str, float, float] | None = None
         if error_rate > rollout.max_error_rate:
-            _rollback(
-                rollout,
-                f"challenger error_rate={error_rate:.0%} over {len(traces)} requests "
+            rollback = (
+                f"challenger error_rate={error_rate:.0%} over {n} requests "
                 f"(max {rollout.max_error_rate:.0%})",
+                error_rate,
+                rollout.max_error_rate,
             )
-            await _fire_rollback_alert(
-                session, rollout, current=error_rate, threshold=rollout.max_error_rate
-            )
-        elif avg_quality is not None and avg_quality < rollout.quality_floor:
-            _rollback(
-                rollout,
-                f"challenger avg_quality={avg_quality:.2f} over {len(traces)} requests "
+        elif challenger_quality is not None and challenger_quality < rollout.quality_floor:
+            rollback = (
+                f"challenger avg_quality={challenger_quality:.2f} over {n} requests "
                 f"(floor {rollout.quality_floor:.2f})",
+                challenger_quality,
+                rollout.quality_floor,
             )
-            await _fire_rollback_alert(
-                session, rollout, current=avg_quality, threshold=rollout.quality_floor
+        elif (
+            challenger_quality is not None
+            and incumbent_quality is not None
+            and challenger_quality < incumbent_quality - rollout.max_quality_regression
+        ):
+            allowed = incumbent_quality - rollout.max_quality_regression
+            rollback = (
+                f"challenger avg_quality={challenger_quality:.2f} regressed more than "
+                f"{rollout.max_quality_regression:.2f} below the incumbent's "
+                f"{incumbent_quality:.2f} over the same window",
+                challenger_quality,
+                allowed,
             )
+
+        rollout.last_evaluated_at = until
+        if rollback is not None:
+            reason, current, threshold = rollback
+            _rollback(rollout, reason)
+            await _fire_rollback_alert(session, rollout, current=current, threshold=threshold)
+            decisions.append("rollback")
         else:
             rollout.traffic_pct = min(rollout.max_pct, rollout.traffic_pct + rollout.step_pct)
-            quality_note = f", avg_quality={avg_quality:.2f}" if avg_quality is not None else ""
+            quality_note = (
+                f", avg_quality={challenger_quality:.2f}" if challenger_quality is not None else ""
+            )
+            evidence = (
+                f"{n} healthy challenger requests (error_rate={error_rate:.0%}{quality_note})"
+            )
             if rollout.traffic_pct >= rollout.max_pct:
                 rollout.stage = "promoted"
-                rollout.outcome_reason = (
-                    f"promoted to {rollout.traffic_pct:.0f}% after {len(traces)} healthy "
-                    f"challenger requests (error_rate={error_rate:.0%}{quality_note})"
-                )
+                rollout.outcome_reason = f"promoted to {rollout.traffic_pct:.0f}% after {evidence}"
+                decisions.append("promote")
             else:
-                rollout.outcome_reason = (
-                    f"advanced to {rollout.traffic_pct:.0f}% after {len(traces)} healthy "
-                    f"challenger requests (error_rate={error_rate:.0%}{quality_note})"
-                )
+                rollout.outcome_reason = f"advanced to {rollout.traffic_pct:.0f}% after {evidence}"
+                decisions.append("advance")
 
         changed.append(rollout)
 
     if changed:
         await session.commit()
+        # Counted only once the decisions are durable.
+        for decision in decisions:
+            ROLLOUT_DECISIONS_TOTAL.labels(decision=decision).inc()
     return changed

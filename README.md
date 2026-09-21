@@ -3,7 +3,7 @@
 **Autonomous LLM Reliability, Evaluation, Observability & Optimization Platform**
 
 [![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows)
-[![Tests](https://img.shields.io/badge/tests-117_passing-brightgreen)](tests)
+[![Tests](https://img.shields.io/badge/tests-272_passing-brightgreen)](tests)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)](frontend/tsconfig.json)
 [![Docker](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
@@ -90,6 +90,8 @@ flowchart TB
         EVAL["Evaluation pipeline\ndeterministic + judge + hallucination"]
         REGR["Regression detector"]
         ALERT["Alert rule evaluator"]
+        HEALTH["Model health monitor"]
+        ROLL["Canary rollout evaluator"]
     end
 
     subgraph data["Storage"]
@@ -105,7 +107,7 @@ flowchart TB
     end
 
     subgraph fe["sentinel-dashboard (Next.js)"]
-        DASH["Overview · Traces · Trace detail\nEvaluations · Datasets · Experiments\nPrompts · Models · Routing\nRegressions · Cost · Settings"]
+        DASH["Overview · Traces · Trace detail\nEvaluations · Datasets · Experiments\nPrompts · Models · Routing · Rollouts\nRegressions · Cost · Settings"]
     end
 
     SDK -->|"trace / generate"| GEN
@@ -118,6 +120,10 @@ flowchart TB
     REDIS --> WORKER --> EVAL --> PG
     WORKER --> REGR --> PG
     WORKER --> ALERT --> PG
+    WORKER --> HEALTH --> PG
+    WORKER --> ROLL --> PG
+    WORKER -.->|"/metrics :9100"| PROM["Prometheus + Grafana\n(optional profile)"]
+    GEN -.->|"/metrics :8000"| PROM
     READ --> PG
     DASH -->|"X-API-Key"| READ
     DASH --> GEN
@@ -150,7 +156,9 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 | Hallucination detection (claim extraction + verification) | ✅ | Modular extractor/verifier strategies |
 | RAG evaluation metrics (Recall@K, Precision@K, MRR, NDCG) | ✅ | `evaluation/rag_metrics.py` + benchmark dataset |
 | Intelligent model router with explainable scoring | ✅ | `routing_score = f(quality, cost, latency, risk)`, min-max normalized |
-| **Autonomous progressive canary rollouts** | ✅ | Probabilistically splits an app's un-pinned `/generate` traffic between an incumbent and challenger model; a worker loop steps traffic up, auto-promotes at 100%, or auto-rolls-back to 0% from the challenger's real trailing error rate/quality/model-health — no operator in the loop unless they pause/promote/rollback manually |
+| **Autonomous progressive canary rollouts** | ✅ | Probabilistically splits an app's un-pinned `/generate` traffic between an incumbent and challenger model; a worker loop steps traffic up, auto-promotes at 100%, or auto-rolls-back to 0% from the challenger's real error rate, evaluated quality (absolute floor *and* relative to the incumbent over the same window), and model health — no operator in the loop unless they pause/promote/rollback manually |
+| Multi-replica-safe autonomous loops | ✅ | Every periodic worker pass (regression, alerting, model health, rollouts) takes a Postgres advisory lock, so scaling the worker to N replicas can't double-apply a rollout step or double-fire an alert; operator actions and worker passes serialise on the rollout row ([decision 12](docs/design-decisions.md#12-periodic-worker-loops-are-cluster-wide-singletons-postgres-advisory-locks)) |
+| Worker observability + Grafana dashboard | ✅ | The worker serves its own `/metrics` (loop health/staleness, queue depth, evaluation scores, rollout/alert/model-health decisions); `docker compose --profile monitoring up` adds Prometheus + a provisioned Grafana dashboard and autonomy alert rules |
 | Automatic model health detection | ✅ | A worker loop flips `ModelPricing.status` (healthy/degraded/down) from real trailing error rate; a manual `PATCH .../status` pins it against being overridden |
 | Resilient execution (retry + backoff + jitter + fallback chain) | ✅ | Distinguishes retryable vs. terminal errors (e.g. context overflow) |
 | Prompt registry with versioning, status lifecycle + promotion gate | ✅ | draft → testing → production → deprecated; promotion requires a passing experiment (`pass_rate ≥ threshold`) for that exact prompt version |
@@ -201,6 +209,19 @@ prompt+model regression that the regression detector finds for real:
 REGRESSION DETECTED: faithfulness 0.5528 -> 0.5067 (-8.3%, low)
   — model changed mock:sentinel-pro -> mock:sentinel-nano;
     prompt changed support-answer:v1 -> support-answer:v2
+```
+
+The seed also leaves a canary rollout in flight (`checkout-assistant`,
+`sentinel-pro` → `sentinel-flash`), whose traffic was really split by
+`/generate`; the worker picks it up and advances it on its own — watch it on
+the **Rollouts** page.
+
+For metrics, add the optional monitoring stack (Prometheus + Grafana, not part
+of the default footprint):
+
+```bash
+docker compose --profile monitoring up      # Grafana http://localhost:3001, Prometheus http://localhost:9090
+docker compose --profile monitoring up --scale worker=2   # two replicas: watch the advisory lock at work
 ```
 
 No OpenAI/Anthropic API key is needed for any of this. To use a real
@@ -345,15 +366,21 @@ rationale: **[docs/architecture.md](docs/architecture.md#database)**.
 
 - **Structured JSON logs** via `structlog`, every line correlated with a
   request ID (and trace ID where applicable) via `contextvars`.
-- **Prometheus metrics** at `/metrics`: `sentinel_requests_total`,
+- **Prometheus metrics** on two endpoints, because two processes record them:
+  the API's `/metrics` (`sentinel_requests_total`,
   `sentinel_request_latency_seconds`, `sentinel_llm_requests_total`,
   `sentinel_llm_errors_total`, `sentinel_llm_cost_total`,
-  `sentinel_evaluation_score`, `sentinel_cache_hits_total`,
-  `sentinel_routing_decisions_total`.
+  `sentinel_cache_hits_total`, `sentinel_routing_decisions_total`) and the
+  worker's own `:9100/metrics` (`sentinel_evaluation_score`,
+  `sentinel_worker_loop_*`, `sentinel_queue_depth`,
+  `sentinel_rollout_decisions_total`, `sentinel_alerts_fired_total`,
+  `sentinel_model_status_changes_total`).
 - **OpenTelemetry** tracer configured (`sentinellm.observability.tracing`),
   exports to OTLP when `SENTINEL_OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-- Example Prometheus scrape config + alerting rules:
-  [`infrastructure/monitoring/`](infrastructure/monitoring/).
+- A provisioned Grafana dashboard, Prometheus scrape config, and alerting
+  rules (including alerts on the autonomous loops themselves — a stalled loop
+  can't report its own stall): [`infrastructure/monitoring/`](infrastructure/monitoring/),
+  started with `docker compose --profile monitoring up`.
 
 Details: **[docs/observability.md](docs/observability.md)**.
 
@@ -374,7 +401,7 @@ Details: **[docs/observability.md](docs/observability.md)**.
 
 ## Testing
 
-117 backend tests (unit + integration + API), all deterministic and runnable
+232 backend tests (unit + integration + API), all deterministic and runnable
 with **zero external services** (SQLite + `MockProvider` +
 `MockEmbeddingProvider`):
 
@@ -385,9 +412,23 @@ make test
 Covers: model timeout/fallback, malformed LLM/judge responses, duplicate
 trace ingestion (idempotency), semantic cache hit/miss, hallucination
 detection, routing decisions (including provider-outage exclusion),
-regression detection, alert dedup, auth failure, RBAC, rate limiting.
+regression detection, alert dedup, auth failure, RBAC, per-key tenant
+scoping, rate limiting, and the canary-rollout state machine (advance /
+promote / rollback gates, evidence accumulation across passes, the
+incumbent-relative quality guard).
 
-Frontend: 13 Jest/RTL tests (`make frontend-test`).
+Five of those tests exercise the worker's cluster-wide advisory lock and need
+a real Postgres (SQLite has no advisory locks); they skip unless you point
+them at one, which is what CI's plain `pytest` does:
+
+```bash
+docker compose up -d postgres
+SENTINEL_TEST_POSTGRES_URL=postgresql+asyncpg://sentinel:sentinel@localhost:5432/sentinellm pytest tests/unit/test_locks.py
+```
+
+Frontend: 40 Jest/RTL tests (`make frontend-test`), including the Rollouts
+page, Models-page health controls, and the API client against a mocked
+`fetch`.
 
 ## CI/CD
 
@@ -457,8 +498,7 @@ modular monolith instead of eight physical services.
 - Swap the linear-scan semantic cache for pgvector (IVFFlat/HNSW) at real scale.
 - A learned task-complexity classifier instead of the current keyword heuristic.
 - Queue-depth-based worker autoscaling (`sentinel_queue_depth` + prometheus-adapter).
-- PII redaction and prompt-injection detection wired into the ingestion path (hooks exist; no default implementation is shipped — see docs/security.md).
-- A Grafana dashboard JSON checked into `infrastructure/monitoring/` (Prometheus scrape config + alert rules are already there).
+- PII redaction on the `POST /generate` path and in the semantic cache. The regex redactor ships and is wired into `POST /traces` ingestion behind `SENTINEL_PII_REDACTION_ENABLED`, but traces created by `/generate` (and replay) and cache entries still store raw text — see docs/security.md.
 - Real NLI-model-backed claim verification as an alternative hallucination-detection strategy.
 - A trained NER-based PII redactor as a drop-in alternative to the regex default (same `PIIRedactor` protocol).
 

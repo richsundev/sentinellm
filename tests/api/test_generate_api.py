@@ -53,7 +53,6 @@ async def test_generate_uses_semantic_cache_on_repeat_question(
         "question": "What is your refund policy for annual plans?",
         "preferred_model": "mock:sentinel-flash",
         "use_cache": True,
-        "use_router": False,
     }
     first = await client.post("/api/v1/generate", json=payload)
     second = await client.post("/api/v1/generate", json=payload)

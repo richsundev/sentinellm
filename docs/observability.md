@@ -33,10 +33,58 @@ automatically; the rest are recorded at the point of the relevant domain
 event (a routing decision, an LLM call, a cache lookup) so they reflect
 what actually happened, not an inferred proxy.
 
-See [`infrastructure/monitoring/prometheus.yml`](../infrastructure/monitoring/prometheus.yml)
-for a ready-to-use scrape config and
-[`alert_rules.yml`](../infrastructure/monitoring/alert_rules.yml) for
-example Alertmanager rules built on these exact metric names.
+### Worker metrics
+
+The worker is a separate process, so the API's `/metrics` cannot see anything
+recorded in it — it serves its own on `SENTINEL_WORKER_METRICS_PORT`
+(default `9100`; `0` disables). That is where `sentinel_evaluation_score` is
+actually recorded, alongside:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `sentinel_worker_loop_runs_total` | Counter | loop, outcome (`ok` / `error` / `skipped`) |
+| `sentinel_worker_loop_duration_seconds` | Histogram | loop |
+| `sentinel_worker_loop_last_success_timestamp_seconds` | Gauge | loop |
+| `sentinel_queue_depth` | Gauge | — |
+| `sentinel_rollout_decisions_total` | Counter | decision (`advance` / `promote` / `rollback`) |
+| `sentinel_alerts_fired_total` | Counter | rule, severity |
+| `sentinel_model_status_changes_total` | Counter | model, status |
+
+`loop` is one of `regression`, `alerting`, `model_health`, `rollout`,
+`queue_depth`. `skipped` means another replica held that loop's advisory lock
+for the pass (see [decision 12](design-decisions.md#12-periodic-worker-loops-are-cluster-wide-singletons-postgres-advisory-locks)),
+so with several replicas a healthy loop shows a mix of `ok` and `skipped`.
+A loop is stalled when `time() - max by (loop)
+(sentinel_worker_loop_last_success_timestamp_seconds)` grows past a few
+intervals — a failure that is otherwise only visible as an absence in logs.
+`sentinel_queue_depth` is the metric the worker HPA is meant to scale on
+(Prometheus + prometheus-adapter, see the
+[Kubernetes README](../infrastructure/kubernetes/README.md)).
+
+## Prometheus + Grafana
+
+```bash
+docker compose --profile monitoring up      # add -d, and --scale worker=2 to see the lock work
+```
+
+Starts Prometheus on <http://localhost:9090> and Grafana on
+<http://localhost:3001> (anonymous read-only; admin login `admin`/`admin`) in
+addition to the normal stack. Everything is provisioned from files:
+
+* [`prometheus.yml`](../infrastructure/monitoring/prometheus.yml) scrapes the
+  API and — via DNS service discovery, so every replica of a scaled worker is
+  found — the worker.
+* [`grafana/dashboards/sentinellm.json`](../infrastructure/monitoring/grafana/dashboards/sentinellm.json)
+  opens as Grafana's home dashboard: API traffic and latency, LLM calls /
+  errors / spend / routing, evaluation scores and queue depth, and an
+  "Autonomous loops" row (loop staleness, passes by outcome, pass duration,
+  rollout decisions, alerts fired, model status changes).
+* [`alert_rules.yml`](../infrastructure/monitoring/alert_rules.yml) has the
+  request-level SLO rules plus a `sentinellm.autonomy` group: API/worker
+  down, a stalled or failing loop, evaluation backlog, an automatic rollout
+  rollback, a model automatically flagged down. A stalled loop can't alert
+  about its own stall, which is why these live outside the application's
+  DB-backed alerting.
 
 ## Distributed tracing
 

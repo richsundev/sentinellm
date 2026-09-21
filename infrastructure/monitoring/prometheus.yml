@@ -1,12 +1,13 @@
-# Local/dev Prometheus config. Not wired into docker-compose.yml by default
-# (keeping the default `docker compose up` footprint small); run it
-# separately if you want to see the metrics scraped in Prometheus:
+# Prometheus config for the local stack. `docker compose --profile monitoring up`
+# starts Prometheus (http://localhost:9090) and Grafana (http://localhost:3001)
+# with this file mounted; it is not part of the default `docker compose up`
+# footprint.
 #
-#   docker run --rm -p 9090:9090 --network sentinellm_default \
-#     -v $(pwd)/infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml \
-#     prom/prometheus
-#
-# then open http://localhost:9090 and query e.g. sentinel_llm_cost_total.
+# Two scrape targets, because two processes expose metrics:
+#   * the API serves request/LLM/cache/routing metrics on :8000/metrics;
+#   * the worker serves its own on :9100/metrics (evaluation scores, loop
+#     health, queue depth, rollout/alert/model-health decisions) — the API
+#     can never see anything recorded in the worker process.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -21,3 +22,19 @@ scrape_configs:
       - targets: ["api:8000"]
         labels:
           service: sentinel-api
+
+  # DNS service discovery rather than a static target: `docker compose up
+  # --scale worker=N` gives the `worker` name N A records, and every replica
+  # must be scraped (a static `worker:9100` would resolve to just one). On
+  # Kubernetes, use pod-annotation discovery instead — see
+  # infrastructure/kubernetes/README.md.
+  - job_name: sentinel-worker
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9100
+        refresh_interval: 15s
+    relabel_configs:
+      - target_label: service
+        replacement: sentinel-worker

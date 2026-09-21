@@ -22,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -386,6 +387,16 @@ class ModelRollout(Base, TimestampMixin):
     __tablename__ = "model_rollouts"
     __table_args__ = (
         Index("ix_model_rollouts_application_created", "application_id", "created_at"),
+        # At most one active (running/paused) rollout per application. The
+        # service checks first for a friendly error; this index is what
+        # actually holds under concurrent creates.
+        Index(
+            "uq_model_rollouts_one_active_per_app",
+            "application_id",
+            unique=True,
+            postgresql_where=text("stage IN ('running', 'paused')"),
+            sqlite_where=text("stage IN ('running', 'paused')"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
@@ -396,6 +407,7 @@ class ModelRollout(Base, TimestampMixin):
     stage: Mapped[str] = mapped_column(String(20), default="running")
     # running | paused | promoted | rolled_back
     quality_floor: Mapped[float] = mapped_column(Float, default=0.7)
+    max_quality_regression: Mapped[float] = mapped_column(Float, default=0.1)
     max_error_rate: Mapped[float] = mapped_column(Float, default=0.1)
     min_sample_size: Mapped[int] = mapped_column(Integer, default=10)
     step_pct: Mapped[float] = mapped_column(Float, default=10.0)

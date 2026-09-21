@@ -4,7 +4,9 @@
 # equivalents an operator would wire into Alertmanager — request-latency
 # and error-rate SLOs computed straight from the exported Prometheus
 # metrics, independent of whether the application's own DB-backed alerting
-# loop is healthy.
+# loop is healthy — plus the `sentinellm.autonomy` group, which watches the
+# autonomous worker loops themselves (a stalled loop can't alert about its
+# own stall, so that has to come from outside it).
 groups:
   - name: sentinellm.rules
     rules:
@@ -32,3 +34,55 @@ groups:
         labels: { severity: high }
         annotations:
           summary: "Elevated LLM provider error rate for model {{ $labels.model }}"
+
+  - name: sentinellm.autonomy
+    rules:
+      - alert: SentinelApiDown
+        expr: up{job="sentinel-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "SentinelLLM API is not being scraped (down or unreachable)"
+
+      - alert: SentinelWorkerDown
+        expr: up{job="sentinel-worker"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "A SentinelLLM worker replica ({{ $labels.instance }}) is not being scraped"
+
+      # Every loop passes every ~60s (queue_depth every 15s), on whichever
+      # replica holds its lock, so the max across replicas is the loop's
+      # true last success.
+      - alert: SentinelWorkerLoopStalled
+        expr: time() - max by (loop) (sentinel_worker_loop_last_success_timestamp_seconds) > 300
+        for: 5m
+        labels: { severity: high }
+        annotations:
+          summary: "Worker loop '{{ $labels.loop }}' has not completed a pass in over 5 minutes"
+
+      - alert: SentinelWorkerLoopErrors
+        expr: sum by (loop) (increase(sentinel_worker_loop_runs_total{outcome="error"}[15m])) > 3
+        for: 5m
+        labels: { severity: high }
+        annotations:
+          summary: "Worker loop '{{ $labels.loop }}' failed more than 3 times in 15 minutes"
+
+      - alert: SentinelEvaluationBacklog
+        expr: max(sentinel_queue_depth) > 100
+        for: 10m
+        labels: { severity: medium }
+        annotations:
+          summary: "More than 100 traces waiting for evaluation for 10 minutes — scale the worker"
+
+      - alert: SentinelRolloutAutoRolledBack
+        expr: sum(increase(sentinel_rollout_decisions_total{decision="rollback"}[15m])) > 0
+        labels: { severity: medium }
+        annotations:
+          summary: "A canary rollout was automatically rolled back in the last 15 minutes"
+
+      - alert: SentinelModelFlaggedDown
+        expr: sum by (model) (increase(sentinel_model_status_changes_total{status="down"}[15m])) > 0
+        labels: { severity: high }
+        annotations:
+          summary: "Model {{ $labels.model }} was automatically flagged down by the health monitor"

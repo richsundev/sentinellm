@@ -94,11 +94,21 @@ services:
       dockerfile: infrastructure/docker/worker.Dockerfile
     environment:
       <<: *backend-env
+    # Serves its own Prometheus metrics on :9100 (not published to the host, so
+    # `--scale worker=N` doesn't collide on a port; Prometheus scrapes it over
+    # the compose network).
+    expose:
+      - "9100"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   frontend:
     build:
@@ -114,6 +124,40 @@ services:
       - "3000:3000"
     depends_on:
       - api
+
+  # ---- Optional monitoring stack: `docker compose --profile monitoring up` ----
+  prometheus:
+    profiles: ["monitoring"]
+    # prom/prometheus:v3.5.0, pinned by digest — re-resolve with
+    # `docker pull prom/prometheus:v3.5.0 && docker inspect --format='{{index .RepoDigests 0}}' prom/prometheus:v3.5.0`
+    image: prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    profiles: ["monitoring"]
+    # grafana/grafana:12.1.0, pinned by digest — re-resolve with
+    # `docker pull grafana/grafana:12.1.0 && docker inspect --format='{{index .RepoDigests 0}}' grafana/grafana:12.1.0`
+    image: grafana/grafana@sha256:6ac590e7cabc2fbe8d7b8fc1ce9c9f0582177b334e0df9c927ebd9670469440f
+    environment:
+      # Local demo only: anonymous read-only access so the dashboard opens
+      # without a login. Admin login is admin / admin (change it for anything
+      # beyond localhost).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sentinellm.json
+    volumes:
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   pgdata:

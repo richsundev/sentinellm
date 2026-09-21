@@ -173,3 +173,77 @@ async def test_list_rollouts_filters_by_application_and_stage(
     only_running = await client.get("/api/v1/rollouts", params={"stage": "running"})
     stages = {r["stage"] for r in only_running.json()["items"]}
     assert stages == {"running"}
+
+
+@pytest.mark.asyncio
+async def test_create_rollout_rejects_a_model_not_in_the_catalog(
+    client: AsyncClient, seeded_models: AsyncSession
+) -> None:
+    resp = await _create_rollout(client, challenger_model="mock:typo-model")
+    assert resp.status_code == 404
+    assert "mock:typo-model" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_rollout_rejects_a_challenger_flagged_down(
+    client: AsyncClient, seeded_models: AsyncSession
+) -> None:
+    await client.patch("/api/v1/models/mock:sentinel-pro", json={"status": "down"})
+
+    resp = await _create_rollout(client, challenger_model="mock:sentinel-pro")
+
+    assert resp.status_code == 409
+    assert "down" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_rollout_rejects_initial_pct_above_max_pct(
+    client: AsyncClient, seeded_models: AsyncSession
+) -> None:
+    resp = await _create_rollout(client, initial_pct=80.0, max_pct=50.0)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_rollout_round_trips_the_regression_guard(
+    client: AsyncClient, seeded_models: AsyncSession
+) -> None:
+    default = await _create_rollout(client, application_id="guard-default")
+    assert default.json()["max_quality_regression"] == 0.1
+
+    custom = await _create_rollout(
+        client, application_id="guard-custom", max_quality_regression=0.25
+    )
+    assert custom.json()["max_quality_regression"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_database_enforces_one_active_rollout_per_application(
+    db_session: AsyncSession,
+) -> None:
+    """The service checks first, but two concurrent creates can both pass
+    that check — the partial unique index is what actually holds."""
+    from sqlalchemy.exc import IntegrityError
+
+    from sentinellm.db.models import ModelRollout
+
+    def rollout(stage: str) -> ModelRollout:
+        return ModelRollout(
+            application_id="race-app",
+            incumbent_model="mock:a",
+            challenger_model="mock:b",
+            stage=stage,
+        )
+
+    db_session.add(rollout("running"))
+    await db_session.commit()
+
+    db_session.add(rollout("paused"))
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+    # Terminal rollouts don't count toward the limit.
+    db_session.add(rollout("rolled_back"))
+    db_session.add(rollout("promoted"))
+    await db_session.commit()

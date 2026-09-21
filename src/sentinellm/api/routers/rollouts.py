@@ -10,7 +10,12 @@ from sentinellm.api.deps import RequireRead, RequireWrite, get_db, scope_of
 from sentinellm.api.schemas.common import Page
 from sentinellm.api.schemas.rollout import RolloutCreate, RolloutDetailOut, RolloutOut
 from sentinellm.db.models import APIKey, ModelRollout
-from sentinellm.services.rollouts import RolloutConflictError, compute_arm_stats, create_rollout
+from sentinellm.services.rollouts import (
+    RolloutConflictError,
+    RolloutModelNotFoundError,
+    compute_arm_stats,
+    create_rollout,
+)
 
 router = APIRouter(prefix="/api/v1/rollouts", tags=["rollouts"])
 
@@ -27,6 +32,8 @@ async def create_rollout_endpoint(
         )
     try:
         rollout = await create_rollout(db, payload)
+    except RolloutModelNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except RolloutConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return RolloutOut.model_validate(rollout)
@@ -66,8 +73,13 @@ async def list_rollouts(
     )
 
 
-async def _get_scoped_rollout(db: AsyncSession, api_key: APIKey, rollout_id: str) -> ModelRollout:
-    rollout = await db.get(ModelRollout, rollout_id)
+async def _get_scoped_rollout(
+    db: AsyncSession, api_key: APIKey, rollout_id: str, *, for_update: bool = False
+) -> ModelRollout:
+    # `for_update` takes a row lock (a no-op on SQLite). The state-changing
+    # endpoints use it so an operator action and a worker evaluation pass
+    # serialise on the row instead of one silently overwriting the other.
+    rollout = await db.get(ModelRollout, rollout_id, with_for_update=for_update)
     if rollout is None or not scope_of(api_key).contains(rollout.application_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"rollout '{rollout_id}' not found")
     return rollout
@@ -101,7 +113,7 @@ async def get_rollout(
 async def pause_rollout(
     rollout_id: str, db: AsyncSession = Depends(get_db), api_key: APIKey = Depends(RequireWrite)
 ) -> RolloutOut:
-    rollout = await _get_scoped_rollout(db, api_key, rollout_id)
+    rollout = await _get_scoped_rollout(db, api_key, rollout_id, for_update=True)
     if rollout.stage != "running":
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"rollout is '{rollout.stage}', not running"
@@ -115,7 +127,7 @@ async def pause_rollout(
 async def resume_rollout(
     rollout_id: str, db: AsyncSession = Depends(get_db), api_key: APIKey = Depends(RequireWrite)
 ) -> RolloutOut:
-    rollout = await _get_scoped_rollout(db, api_key, rollout_id)
+    rollout = await _get_scoped_rollout(db, api_key, rollout_id, for_update=True)
     if rollout.stage != "paused":
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"rollout is '{rollout.stage}', not paused"
@@ -129,7 +141,7 @@ async def resume_rollout(
 async def promote_rollout(
     rollout_id: str, db: AsyncSession = Depends(get_db), api_key: APIKey = Depends(RequireWrite)
 ) -> RolloutOut:
-    rollout = await _get_scoped_rollout(db, api_key, rollout_id)
+    rollout = await _get_scoped_rollout(db, api_key, rollout_id, for_update=True)
     if rollout.stage not in ("running", "paused"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"rollout is already '{rollout.stage}'")
     rollout.stage = "promoted"
@@ -144,7 +156,7 @@ async def promote_rollout(
 async def rollback_rollout(
     rollout_id: str, db: AsyncSession = Depends(get_db), api_key: APIKey = Depends(RequireWrite)
 ) -> RolloutOut:
-    rollout = await _get_scoped_rollout(db, api_key, rollout_id)
+    rollout = await _get_scoped_rollout(db, api_key, rollout_id, for_update=True)
     if rollout.stage not in ("running", "paused"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"rollout is already '{rollout.stage}'")
     rollout.stage = "rolled_back"

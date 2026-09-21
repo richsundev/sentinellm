@@ -280,3 +280,60 @@ scaling/ownership (e.g. a different team, a GPU-bound custom evaluator),
 splitting `sentinellm.evaluation` into its own service is a matter of
 extracting a module that already has a clean interface (`EvaluationPipeline`)
 — not a rewrite.
+
+## 12. Periodic worker loops are cluster-wide singletons (Postgres advisory locks)
+
+**Context.** The worker Deployment runs several replicas
+([`worker-deployment.yaml`](../infrastructure/kubernetes/worker-deployment.yaml):
+2, HPA up to 10) and every replica runs every loop. That is exactly right for
+the evaluation consumer — `BRPOP` hands each job to one replica and the claim
+query makes redelivery a no-op (decision 10). It is wrong for the four
+periodic passes (regression detection, alert evaluation, model health, canary
+rollouts): each is a read-decide-write cycle over shared state. The alert
+loop's "already alerted?" dedupe is a check-then-insert race, so two replicas
+in the same window both fire the same alert (reproduced against Postgres:
+two concurrent passes over identical data produced duplicate alerts). The
+rollout pass is a state machine (`traffic_pct += step_pct`).
+
+**Decision.** Each periodic pass takes a Postgres session-level advisory lock
+(`pg_try_advisory_lock`, [`core/locks.py`](../src/sentinellm/core/locks.py))
+named after the loop. A replica that can't get it skips that pass — another
+replica is already running it. The lock is held only for the duration of a
+pass, on its own dedicated connection. This is the general mechanism because
+most of these loops have no single row to lock (alert dedupe spans a table;
+regression detection reads a window). The rollout loop is additionally
+protected at the row: it selects `FOR UPDATE SKIP LOCKED`, and the operator
+endpoints (pause/promote/rollback) take the same row lock — a lock between
+*workers* says nothing about an operator clicking "promote" mid-pass, and a
+row lock alone would still leave N replicas doing N times the work. Belt and
+braces, each covering a case the other doesn't.
+
+**Alternatives.** *Leader election* (a Kubernetes Lease, or a Redis lock with
+a TTL): one designated leader runs everything. More moving parts, needs a
+renewal loop and fencing, and a slow leader stalls all four loops at once;
+per-pass locks make the "leader" implicit and per-loop. *Run the periodic
+loops as a separate single-replica Deployment*: correct and simple, but
+splits one codebase into two images/manifests and makes the loop a single
+point of failure until Kubernetes reschedules it. *A `CronJob` per loop*:
+loses the sub-minute cadence and adds job-startup overhead. *Idempotent
+loops with optimistic concurrency only*: the right end state for the rollout
+state machine, but it doesn't cover the alert dedupe or make the passes any
+cheaper — they'd still all run N times.
+
+**Tradeoffs.** It ties correctness to Postgres, which this platform already
+requires; on SQLite (tests, single-process demos) the lock is a no-op that
+always reports acquired, which is only sound because there is then exactly
+one process. The lock lives on a connection of its own (so it isn't stranded
+on the wrong pooled connection when the working session commits mid-pass),
+costing one extra connection per running loop. Cadence becomes "every
+`interval` on *some* replica" rather than a fixed global clock: with N
+replicas a loop may run more often than once per interval, which the passes
+tolerate because each is cursor-based over a window, not a fixed schedule.
+
+**Consequences.** Adding a replica adds evaluation throughput without
+changing what the autonomous loops do. A replica dying mid-pass frees the
+lock immediately (Postgres drops it with the connection) — verified in
+`tests/unit/test_locks.py` by killing the holder's backend. Every pass is
+counted per outcome (`ok` / `error` / `skipped`) in
+`sentinel_worker_loop_runs_total`, so "skipped" is the lock doing its job and
+is visible on the dashboard.

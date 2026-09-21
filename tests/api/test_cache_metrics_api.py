@@ -21,7 +21,6 @@ async def test_overview_computes_cache_hit_rate_and_savings(
         "question": "What is your refund policy for annual plans?",
         "preferred_model": "mock:sentinel-flash",
         "use_cache": True,
-        "use_router": False,
         "evaluate": False,
     }
     first = await client.post("/api/v1/generate", json=payload)

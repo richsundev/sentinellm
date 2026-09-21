@@ -43,15 +43,29 @@ Being explicit about this, per the project's engineering-quality bar:
   placeholders. A real pipeline should build immutable, digest-pinned tags
   (see `.github/workflows/build.yml`) and never deploy `:latest`.
 - **The worker HPA scales on CPU only.** The workload is I/O- and
-  queue-bound, not CPU-bound; a `sentinel_queue_depth` custom metric (via
-  Prometheus + prometheus-adapter) would scale far more responsively to a
-  burst of ingested traces. Not implemented here — see `docs/performance.md`.
+  queue-bound, not CPU-bound; scaling on the queue would react far more
+  quickly to a burst of ingested traces. The worker already exports
+  `sentinel_queue_depth` (`:9100/metrics`, scraped via the pod annotations in
+  `worker-deployment.yaml`); what's missing is a prometheus-adapter rule
+  exposing it as a custom metric and an HPA `Pods`/`External` metric block
+  using it — see `docs/performance.md`.
+- **No Prometheus/Grafana in the manifests.** The worker and API expose
+  metrics and the pod annotations are in place, but running Prometheus is
+  left to your cluster (kube-prometheus-stack works with the annotations or
+  a `PodMonitor`). The dashboard and alert rules to load are in
+  `infrastructure/monitoring/`.
 - **No TLS between in-cluster services** (only at the ingress edge via
   cert-manager). Fine for a single-tenant namespace; not fine for a
   multi-tenant cluster.
 - **No resource quotas / LimitRanges at the namespace level.**
 
 ## What it does demonstrate correctly
+
+- Safe horizontal scaling of the worker: its evaluation consumer is
+  idempotent, and its periodic passes (regression, alerting, model health,
+  canary rollouts) are serialised across replicas by Postgres advisory locks,
+  so `replicas: 2` and an HPA up to 10 don't double-apply a rollout step or
+  double-fire an alert.
 
 - Config/secret separation (`ConfigMap` for non-sensitive values, `Secret`
   for credentials), consumed via `envFrom` — never baked into the image.

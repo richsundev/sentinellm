@@ -113,6 +113,7 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
   const [challengerModel, setChallengerModel] = useState("");
   const [initialPct, setInitialPct] = useState("10");
   const [qualityFloor, setQualityFloor] = useState("0.7");
+  const [maxQualityRegression, setMaxQualityRegression] = useState("0.1");
   const [maxErrorRate, setMaxErrorRate] = useState("0.1");
   const [minSampleSize, setMinSampleSize] = useState("10");
   const [stepPct, setStepPct] = useState("10");
@@ -135,6 +136,7 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
         challenger_model: challengerModel,
         initial_pct: Number(initialPct),
         quality_floor: Number(qualityFloor),
+        max_quality_regression: Number(maxQualityRegression),
         max_error_rate: Number(maxErrorRate),
         min_sample_size: Number(minSampleSize),
         step_pct: Number(stepPct),
@@ -201,6 +203,16 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
             value={qualityFloor}
             onChange={(e) => setQualityFloor(e.target.value)}
             disabled={creating}
+            className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
+          />
+        </LabeledField>
+        <LabeledField label="Max drop vs incumbent">
+          <input
+            type="number" min="0" max="1" step="0.05"
+            value={maxQualityRegression}
+            onChange={(e) => setMaxQualityRegression(e.target.value)}
+            disabled={creating}
+            title="How far below the incumbent's own quality (same window) the challenger may fall before rollback"
             className="w-full rounded border border-base-600 bg-base-800 px-2 py-1.5 text-base-200 disabled:cursor-not-allowed"
           />
         </LabeledField>
@@ -333,8 +345,10 @@ function RolloutDetailPanel({
 
         <div className="rounded border border-base-700 bg-base-900 p-2.5 text-xs">
           <div className="text-base-500">
-            floor {rollout.quality_floor.toFixed(2)} · max error {formatPercent(rollout.max_error_rate)} ·
-            step {rollout.step_pct}% · min sample {rollout.min_sample_size}
+            floor {rollout.quality_floor.toFixed(2)} · max drop vs incumbent{" "}
+            {rollout.max_quality_regression.toFixed(2)} · max error{" "}
+            {formatPercent(rollout.max_error_rate)} · step {rollout.step_pct}% · min sample{" "}
+            {rollout.min_sample_size}
           </div>
           {rollout.last_evaluated_at && (
             <div className="mt-1 text-base-500">

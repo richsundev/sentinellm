@@ -7,7 +7,7 @@ setup.
 
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 REQUESTS_TOTAL = Counter(
     "sentinel_requests_total",
@@ -41,4 +41,40 @@ ROUTING_DECISIONS_TOTAL = Counter(
     "sentinel_routing_decisions_total",
     "Router model selections",
     ["selected_model", "task_complexity"],
+)
+
+# --- Worker process ---------------------------------------------------------
+# Recorded by the worker, which serves them on its own port
+# (`SENTINEL_WORKER_METRICS_PORT`) — the API's `/metrics` never sees these.
+WORKER_LOOP_RUNS_TOTAL = Counter(
+    "sentinel_worker_loop_runs_total",
+    "Periodic worker loop passes",
+    ["loop", "outcome"],  # outcome: ok | error | skipped (another replica held the lock)
+)
+WORKER_LOOP_LAST_SUCCESS_TIMESTAMP = Gauge(
+    "sentinel_worker_loop_last_success_timestamp_seconds",
+    "Unix time this replica last completed a pass of the loop successfully",
+    ["loop"],
+)
+WORKER_LOOP_DURATION_SECONDS = Histogram(
+    "sentinel_worker_loop_duration_seconds",
+    "Wall-clock duration of a periodic worker loop pass",
+    ["loop"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
+)
+QUEUE_DEPTH = Gauge("sentinel_queue_depth", "Pending jobs in the evaluation queue")
+
+# --- Autonomous decisions ---------------------------------------------------
+ROLLOUT_DECISIONS_TOTAL = Counter(
+    "sentinel_rollout_decisions_total",
+    "Automatic canary rollout decisions",
+    ["decision"],  # advance | promote | rollback
+)
+ALERTS_FIRED_TOTAL = Counter(
+    "sentinel_alerts_fired_total", "Alerts fired by the worker", ["rule", "severity"]
+)
+MODEL_STATUS_CHANGES_TOTAL = Counter(
+    "sentinel_model_status_changes_total",
+    "Automatic model health status transitions",
+    ["model", "status"],
 )
