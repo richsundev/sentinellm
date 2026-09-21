@@ -159,7 +159,7 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 | **Autonomous progressive canary rollouts** | ✅ | Probabilistically splits an app's un-pinned `/generate` traffic between an incumbent and challenger model; a worker loop steps traffic up, auto-promotes at 100%, or auto-rolls-back to 0% from the challenger's real error rate, evaluated quality (absolute floor *and* relative to the incumbent over the same window), and model health — no operator in the loop unless they pause/promote/rollback manually |
 | Multi-replica-safe autonomous loops | ✅ | Every periodic worker pass (regression, alerting, model health, rollouts) takes a Postgres advisory lock, so scaling the worker to N replicas can't double-apply a rollout step or double-fire an alert; operator actions and worker passes serialise on the rollout row ([decision 12](docs/design-decisions.md#12-periodic-worker-loops-are-cluster-wide-singletons-postgres-advisory-locks)) |
 | Worker observability + Grafana dashboard | ✅ | The worker serves its own `/metrics` (loop health/staleness, queue depth, evaluation scores, rollout/alert/model-health decisions); `docker compose --profile monitoring up` adds Prometheus + a provisioned Grafana dashboard and autonomy alert rules |
-| Automatic model health detection | ✅ | A worker loop flips `ModelPricing.status` (healthy/degraded/down) from real trailing error rate; a manual `PATCH .../status` pins it against being overridden |
+| Automatic model health detection | ✅ | A worker loop flips `ModelPricing.status` (healthy/degraded/down) from real trailing error rate — including calls that failed before a fallback answered — and gives a down model another chance (as `degraded`) once its failures age out of the window; a manual `PATCH .../status` pins it against being overridden |
 | Resilient execution (retry + backoff + jitter + fallback chain) | ✅ | Distinguishes retryable vs. terminal errors (e.g. context overflow) |
 | Prompt registry with versioning, status lifecycle + promotion gate | ✅ | draft → testing → production → deprecated; promotion requires a passing experiment (`pass_rate ≥ threshold`) for that exact prompt version |
 | Trace replay | ✅ | `POST /traces/{id}/replay` resubmits a trace's prompt through `/generate` with an optional model override, for side-by-side comparison |
@@ -345,7 +345,8 @@ routing_score = quality_weight   * predicted_quality
               - risk_weight      * risk
 ```
 
-Candidates are excluded outright if their provider health is `down`, or if
+Candidates are excluded outright if their provider health is `down`, if the
+request (estimated in tokens) can't fit their context window, or if
 their predicted quality is below a task-dependent floor (raised for complex
 or high-risk requests) — that's what makes "complex task → strong model"
 and "high-risk request → high-quality model" guarantees rather than soft
@@ -501,7 +502,6 @@ modular monolith instead of eight physical services.
 - Swap the linear-scan semantic cache for pgvector (IVFFlat/HNSW) at real scale.
 - A learned task-complexity classifier instead of the current keyword heuristic.
 - Queue-depth-based worker autoscaling (`sentinel_queue_depth` + prometheus-adapter).
-- PII redaction on the `POST /generate` path and in the semantic cache. The regex redactor ships and is wired into `POST /traces` ingestion behind `SENTINEL_PII_REDACTION_ENABLED`, but traces created by `/generate` (and replay) and cache entries still store raw text — see docs/security.md.
 - Real NLI-model-backed claim verification as an alternative hallucination-detection strategy.
 - A trained NER-based PII redactor as a drop-in alternative to the regex default (same `PIIRedactor` protocol).
 

@@ -10,6 +10,7 @@ single flaky judge call never fails the whole evaluation pipeline.
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -33,6 +34,25 @@ _RESPONSE_INSTRUCTIONS = (
     "Respond with ONLY a single JSON object, no prose, no markdown fences, matching exactly: "
     '{"score": <float 0-1>, "reasoning": <string>, "evidence": [<string>, ...], "confidence": <float 0-1>}'
 )
+
+
+_FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
+
+
+def _parse_verdict_json(content: object) -> object:
+    """Parses the judge's reply, tolerating what real chat models do despite
+    being told not to: wrap the object in a markdown fence or surround it with
+    a sentence of prose. A reply that is not text at all is malformed."""
+    if not isinstance(content, str):
+        raise json.JSONDecodeError("judge reply was not text", "", 0)
+    text = _FENCE_RE.sub("", content.strip())
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(text[start : end + 1])
 
 
 class JudgeVerdict(BaseModel):
@@ -93,7 +113,7 @@ class JudgeEvaluator(Evaluator):
             )
             try:
                 response = await self._provider.complete(request)
-                verdict = JudgeVerdict.model_validate(json.loads(response.content))
+                verdict = JudgeVerdict.model_validate(_parse_verdict_json(response.content))
                 return verdict, self.version
             except (json.JSONDecodeError, ValidationError) as exc:
                 last_error = exc

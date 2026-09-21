@@ -205,8 +205,9 @@ export interface ApplicationCreateRequest {
 }
 
 export interface ApplicationUpdateRequest {
-  description?: string;
-  daily_cost_budget?: number;
+  description?: string | null;
+  // `null` clears the budget; omitting the field leaves it unchanged.
+  daily_cost_budget?: number | null;
 }
 
 export interface ApiKey {

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class RetrievedDocumentIn(BaseModel):
@@ -123,7 +123,9 @@ class TraceFeedbackOut(BaseModel):
 
 
 class TraceTagsIn(BaseModel):
-    tags: list[str] = Field(default_factory=list)
+    tags: list[Annotated[str, StringConstraints(max_length=50)]] = Field(
+        default_factory=list, max_length=20
+    )
 
 
 class TraceTagsOut(BaseModel):

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/api";
 import { useFetch } from "@/lib/useFetch";
@@ -27,14 +27,22 @@ export default function TracesPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  // The environment lives in the top bar, so changing it doesn't pass through
+  // the filter handlers below; without this the page stays on (say) page 4 of a
+  // result set that no longer has one.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setOffset(0);
+  }, [environment]);
+
   const activeFilters = {
-    model: model || undefined,
-    provider: provider || undefined,
-    application_id: applicationId || undefined,
+    model: model.trim() || undefined,
+    provider: provider.trim() || undefined,
+    application_id: applicationId.trim() || undefined,
     environment: environment === "all" ? undefined : environment,
     status: status || undefined,
-    q: search || undefined,
-    tag: tag || undefined,
+    q: search.trim() || undefined,
+    tag: tag.trim() || undefined,
   };
 
   const { data, loading, error, refetch } = useFetch(
@@ -176,7 +184,7 @@ export default function TracesPage() {
             rowKey={(t) => t.id}
             onRowClick={(t) => router.push(`/trace/${encodeURIComponent(t.trace_id)}`)}
             emptyTitle="No traces found"
-            emptyMessage="Try widening your filters or time range."
+            emptyMessage="Try widening or clearing your filters."
             defaultSortKey="created_at"
           />
           <Pagination

@@ -5,7 +5,9 @@ and can itself degrade evaluation quality (a faithfulness check against a
 redacted answer is checking something slightly different from what the
 model actually said), so it's an explicit opt-in applied at ingestion time
 in `api/routers/traces.py` and `services/generation.py`, not a silent
-default. The `Protocol` keeps the regex implementation swappable for a
+default. What is redacted is what gets *persisted* (the trace and the
+semantic-cache entry, which is replayed to other callers); the model still
+receives the original text. The `Protocol` keeps the regex implementation swappable for a
 real NER-based redactor (e.g. Presidio) without touching call sites.
 """
 
@@ -43,3 +45,8 @@ _default_redactor = RegexPIIRedactor()
 
 def redact_pii(text: str, redactor: PIIRedactor | None = None) -> str:
     return (redactor or _default_redactor).redact(text)
+
+
+def redact_documents(documents: list[dict]) -> list[dict]:
+    """Copies of retrieved-document dicts with their `content` redacted."""
+    return [{**d, "content": redact_pii(d.get("content", ""))} for d in documents]

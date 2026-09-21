@@ -30,9 +30,9 @@ from sentinellm.core.logging import get_logger
 from sentinellm.core.queue import enqueue_evaluation
 from sentinellm.db.models import DatasetRecord, ModelPricing, Trace, TraceSpan
 from sentinellm.embeddings.factory import get_embedding_provider
-from sentinellm.llm.base import LLMMessage, LLMRequest
+from sentinellm.llm.base import LLMErrorKind, LLMMessage, LLMRequest
 from sentinellm.llm.factory import get_provider_for_model, provider_name_for_model
-from sentinellm.llm.resilient import AllModelsFailedError, ResilientLLMClient
+from sentinellm.llm.resilient import AllModelsFailedError, FallbackAttempt, ResilientLLMClient
 from sentinellm.observability.metrics import (
     CACHE_HITS_TOTAL,
     LLM_COST_TOTAL,
@@ -46,6 +46,7 @@ from sentinellm.retrieval.reranker import ScoreJitterReranker
 from sentinellm.retrieval.retriever import Document, EmbeddingRetriever
 from sentinellm.routing.router import ModelCandidate, NoHealthyCandidateError, Router
 from sentinellm.routing.stats import DBModelStatsProvider
+from sentinellm.security.pii import redact_documents, redact_pii
 from sentinellm.services.rollouts import get_active_rollout
 
 logger = get_logger(__name__)
@@ -99,6 +100,21 @@ async def _retrieve_and_rerank(
         for r in reranked
     ]
     return docs, retrieval_ms, rerank_ms
+
+
+def _failed_attempts(
+    attempts: list[FallbackAttempt], *, exclude: str
+) -> list[dict[str, str | None]]:
+    """Calls that failed on the way to (or instead of) an answer — what model
+    health needs to see. A context overflow is the request's fault, not the
+    model's, so it isn't evidence of ill health."""
+    return [
+        {"model": a.model, "error_kind": a.error_kind}
+        for a in attempts
+        if not a.succeeded
+        and a.model != exclude
+        and a.error_kind != LLMErrorKind.CONTEXT_OVERFLOW.value
+    ]
 
 
 def _system_content(system_prompt: str | None, retrieved: list[RetrievedDocumentIn]) -> str:
@@ -210,6 +226,7 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         ).inc()
 
     selected_model = candidate_chain[0]
+    failed_attempts: list[dict[str, str | None]] = []
 
     cache = SemanticCache(
         get_embedding_provider(settings.embedding_provider),
@@ -217,6 +234,7 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         settings.cache_ttl_seconds,
     )
     cache_context_key = context_key_for(system_content)
+    redact = settings.pii_redaction_enabled
     cache_hit = False
     similarity_score: float | None = None
     response_text = ""
@@ -267,6 +285,9 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
             input_tokens = resilient_result.response.input_tokens
             output_tokens = resilient_result.response.output_tokens
             selected_model = resilient_result.model_used
+            failed_attempts = _failed_attempts(
+                resilient_result.attempts_log, exclude=selected_model
+            )
             LLM_REQUESTS_TOTAL.labels(
                 model=selected_model, provider=provider_name_for_model(selected_model), status="ok"
             ).inc()
@@ -279,6 +300,9 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
             )
         except AllModelsFailedError as exc:
             status, error = "error", str(exc)
+            # The trace itself is the first-choice model's failure; the rest of
+            # the chain failed too and is recorded alongside it.
+            failed_attempts = _failed_attempts(exc.attempts_log, exclude=selected_model)
             for attempt in exc.attempts_log:
                 if attempt.error_kind:
                     LLM_ERRORS_TOTAL.labels(
@@ -299,8 +323,9 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
                 session,
                 application_id=request.application_id,
                 model=selected_model,
-                query_text=request.question,
-                response=response_text,
+                # The entry outlives the request and is served to other callers.
+                query_text=redact_pii(request.question) if redact else request.question,
+                response=redact_pii(response_text) if redact else response_text,
                 context_key=cache_context_key,
             )
 
@@ -319,6 +344,8 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     total_latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
     trace_metadata = dict(request.metadata)
+    if failed_attempts:
+        trace_metadata["failed_attempts"] = failed_attempts
     if rollout is not None:
         trace_metadata["rollout_id"] = rollout.id
         trace_metadata["rollout_arm"] = rollout_arm
@@ -330,14 +357,22 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         environment=request.environment,
         model=selected_model,
         provider=provider_name_for_model(selected_model),
-        prompt=request.question,
-        system_prompt=request.system_prompt,
-        response=response_text,
+        prompt=redact_pii(request.question) if redact else request.question,
+        system_prompt=(
+            redact_pii(request.system_prompt)
+            if redact and request.system_prompt
+            else request.system_prompt
+        ),
+        response=redact_pii(response_text) if redact else response_text,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         latency_ms=total_latency_ms,
         estimated_cost=cost,
-        retrieved_documents=[d.model_dump() for d in retrieved],
+        retrieved_documents=(
+            redact_documents([d.model_dump() for d in retrieved])
+            if redact
+            else [d.model_dump() for d in retrieved]
+        ),
         trace_metadata=trace_metadata,
         status=status,
         error=error,

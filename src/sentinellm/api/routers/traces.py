@@ -5,6 +5,7 @@ import io
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy import ColumnElement, String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -26,13 +27,25 @@ from sentinellm.core.config import get_settings
 from sentinellm.core.ids import new_request_id, new_trace_id
 from sentinellm.core.logging import get_logger
 from sentinellm.core.queue import enqueue_evaluation
-from sentinellm.db.models import APIKey, Evaluation, Trace, TraceFeedback, TraceSpan
+from sentinellm.db.models import (
+    APIKey,
+    Evaluation,
+    ModelPricing,
+    Trace,
+    TraceFeedback,
+    TraceSpan,
+)
 from sentinellm.pricing.calculator import calculate_cost
-from sentinellm.security.pii import redact_pii
+from sentinellm.security.pii import redact_documents, redact_pii
 from sentinellm.services.generation import generate as generate_service
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api/v1/traces", tags=["traces"])
+
+# Written by `generate()` to describe one particular execution. A replay is a
+# new execution, so copying these would attribute the original's failures and
+# rollout arm to it.
+_EXECUTION_METADATA = frozenset({"failed_attempts", "rollout_id", "rollout_arm", "replay_of"})
 
 _LOAD_OPTS = (
     selectinload(Trace.spans),
@@ -79,6 +92,12 @@ def _csv_safe(value: str) -> str:
     return value
 
 
+def _like_contains(value: str) -> str:
+    """`%value%` with the user's own `%`, `_` and `\\` taken literally."""
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _trace_filter_clauses(
     *,
     model: str | None,
@@ -100,12 +119,19 @@ def _trace_filter_clauses(
         if value:
             clauses.append(column == value)
     if q:
-        clauses.append(or_(Trace.prompt.ilike(f"%{q}%"), Trace.response.ilike(f"%{q}%")))
+        pattern = _like_contains(q)
+        clauses.append(
+            or_(
+                Trace.prompt.ilike(pattern, escape="\\"), Trace.response.ilike(pattern, escape="\\")
+            )
+        )
     if tag:
         # Generic JSON column has no portable containment operator across
         # SQLite (tests) and Postgres (prod), so match the quoted tag
         # substring in the column's text representation instead.
-        clauses.append(cast(Trace.tags, String).ilike(f'%"{tag.strip().lower()}"%'))
+        clauses.append(
+            cast(Trace.tags, String).ilike(_like_contains(f'"{tag.strip().lower()}"'), escape="\\")
+        )
     return clauses
 
 
@@ -142,13 +168,24 @@ async def ingest_trace(
 
     cost = payload.estimated_cost
     if cost is None:
-        cost = calculate_cost(payload.model, payload.input_tokens, payload.output_tokens)
+        # The registry is where operators keep prices, and what /generate bills
+        # from; the static catalog is only the fallback for unregistered models.
+        pricing = await db.get(ModelPricing, payload.model)
+        cost = calculate_cost(
+            payload.model,
+            payload.input_tokens,
+            payload.output_tokens,
+            input_price_per_1k=pricing.input_price_per_1k if pricing else None,
+            output_price_per_1k=pricing.output_price_per_1k if pricing else None,
+        )
 
     prompt, system_prompt, response = payload.prompt, payload.system_prompt, payload.response
+    retrieved_documents = [d.model_dump() for d in payload.retrieved_documents]
     if get_settings().pii_redaction_enabled:
         prompt = redact_pii(prompt)
         system_prompt = redact_pii(system_prompt) if system_prompt else system_prompt
         response = redact_pii(response)
+        retrieved_documents = redact_documents(retrieved_documents)
 
     trace = Trace(
         trace_id=trace_id,
@@ -164,7 +201,7 @@ async def ingest_trace(
         output_tokens=payload.output_tokens,
         latency_ms=payload.latency_ms,
         estimated_cost=cost,
-        retrieved_documents=[d.model_dump() for d in payload.retrieved_documents],
+        retrieved_documents=retrieved_documents,
         trace_metadata=payload.metadata,
         status=payload.status,
         error=payload.error,
@@ -394,17 +431,30 @@ async def replay_trace(
     if original is None or not scope_of(api_key).contains(original.application_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"trace '{trace_id}' not found")
 
-    request = GenerateRequest(
-        application_id=original.application_id,
-        environment=original.environment,
-        question=original.prompt,
-        system_prompt=original.system_prompt,
-        retrieved_documents=[RetrievedDocumentIn(**doc) for doc in original.retrieved_documents],
-        preferred_model=payload.model,
-        use_cache=payload.use_cache,
-        prompt_id=original.prompt_id,
-        prompt_version=payload.prompt_version or original.prompt_version,
-        metadata={**original.trace_metadata, "replay_of": original.trace_id},
-    )
+    try:
+        request = GenerateRequest(
+            application_id=original.application_id,
+            environment=original.environment,
+            question=original.prompt,
+            system_prompt=original.system_prompt,
+            retrieved_documents=[
+                RetrievedDocumentIn(**doc) for doc in original.retrieved_documents
+            ],
+            preferred_model=payload.model,
+            use_cache=payload.use_cache,
+            prompt_id=original.prompt_id,
+            prompt_version=payload.prompt_version or original.prompt_version,
+            metadata={
+                **{
+                    k: v for k, v in original.trace_metadata.items() if k not in _EXECUTION_METADATA
+                },
+                "replay_of": original.trace_id,
+            },
+        )
+    except ValidationError as exc:
+        # e.g. an ingested trace with an empty prompt, which /generate rejects.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"trace '{trace_id}' can't be replayed: {exc}"
+        ) from exc
     new_trace = await generate_service(db, request)
     return TraceOut.model_validate(new_trace)

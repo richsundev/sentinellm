@@ -45,6 +45,7 @@ function ApplicationsPanel() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   async function handleCreate() {
     if (!name.trim()) return;
@@ -66,12 +67,19 @@ function ApplicationsPanel() {
   }
 
   async function handleBudgetChange(app: Application, value: string) {
+    const budget = value.trim() === "" ? null : Number(value);
+    if (budget !== null && (!Number.isFinite(budget) || budget < 0)) {
+      setSaveError("Budget must be a number, 0 or higher");
+      return;
+    }
     setSavingId(app.id);
+    setSaveError(null);
     try {
-      await api.updateApplication(app.id, {
-        daily_cost_budget: value ? Number(value) : undefined,
-      });
+      // `null` (not `undefined`, which JSON drops) is what clears a budget.
+      await api.updateApplication(app.id, { daily_cost_budget: budget });
       await refetch();
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Failed to update the budget");
     } finally {
       setSavingId(null);
     }
@@ -163,6 +171,7 @@ function ApplicationsPanel() {
         </button>
       </div>
       {createError && <p className="mt-2 text-xs text-red-400">{createError}</p>}
+      {saveError && <p className="mt-2 text-xs text-red-400">{saveError}</p>}
     </Panel>
   );
 }
@@ -312,19 +321,28 @@ function AlertRulesPanel() {
   const { data: rules, loading, error, refetch } = useFetch(() => api.listAlertRules(), []);
   const [drafts, setDrafts] = useState<Record<string, number>>({});
   const [savingRule, setSavingRule] = useState<string | null>(null);
+  const [ruleError, setRuleError] = useState<string | null>(null);
 
   async function toggleEnabled(rule: AlertRule) {
-    await api.updateAlertRule(rule.rule, { enabled: !rule.enabled });
-    await refetch();
+    setRuleError(null);
+    try {
+      await api.updateAlertRule(rule.rule, { enabled: !rule.enabled });
+      await refetch();
+    } catch (err) {
+      setRuleError(err instanceof ApiError ? err.message : "Failed to update the rule");
+    }
   }
 
   async function saveThreshold(rule: AlertRule) {
     const draft = drafts[rule.rule];
     if (draft === undefined || draft === rule.threshold) return;
     setSavingRule(rule.rule);
+    setRuleError(null);
     try {
       await api.updateAlertRule(rule.rule, { threshold: draft });
       await refetch();
+    } catch (err) {
+      setRuleError(err instanceof ApiError ? err.message : "Failed to update the rule");
     } finally {
       setSavingRule(null);
     }
@@ -356,9 +374,17 @@ function AlertRulesPanel() {
                   type="number"
                   step="0.01"
                   defaultValue={rule.threshold}
-                  onChange={(e) =>
-                    setDrafts((d) => ({ ...d, [rule.rule]: Number(e.target.value) }))
-                  }
+                  onChange={(e) => {
+                    // An emptied box is "no value yet", not 0 — saving a
+                    // threshold of 0 would make the rule fire constantly.
+                    const value = e.target.value.trim();
+                    setDrafts((d) => {
+                      const { [rule.rule]: _dropped, ...rest } = d;
+                      return value !== "" && Number.isFinite(Number(value))
+                        ? { ...rest, [rule.rule]: Number(value) }
+                        : rest;
+                    });
+                  }}
                   className="w-24 rounded border border-base-600 bg-base-800 px-2 py-1 text-right font-mono text-base-200"
                 />
                 <button
@@ -385,6 +411,7 @@ function AlertRulesPanel() {
           ))}
         </div>
       )}
+      {ruleError && <p className="mt-2 text-xs text-red-400">{ruleError}</p>}
     </Panel>
   );
 }

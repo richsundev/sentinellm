@@ -32,8 +32,9 @@ cost, latency, and risk — and be able to explain the choice.
 
 4. **Exclude candidates**: any model with observed `status == "down"` is
    dropped outright (provider outage → automatic fallback to a healthy
-   candidate); any model whose `predicted_quality` is below the floor is
-   dropped. Both exclusions are recorded with a human-readable
+   candidate); any model whose context window can't hold the request
+   (estimated at ~1.4 tokens per word of prompt + context) is dropped; any
+   model whose `predicted_quality` is below the floor is dropped. Both exclusions are recorded with a human-readable
    `excluded_reason`, visible via the API.
 
 5. **Score the survivors**:

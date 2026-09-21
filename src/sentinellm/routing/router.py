@@ -54,6 +54,11 @@ class RoutingResult:
     candidates: list[RoutingCandidateResult] = field(default_factory=list)
 
 
+# Words → tokens. Deliberately on the generous side: this only has to keep a
+# request away from a window it clearly cannot fit, not predict a tokenizer.
+_TOKENS_PER_WORD = 1.4
+
+
 class NoHealthyCandidateError(Exception):
     pass
 
@@ -86,6 +91,8 @@ class Router:
         quality_floor = quality_floor_for(complexity)
         if risk >= 0.8:
             quality_floor = max(quality_floor, 0.85)
+
+        estimated_tokens = int((len(prompt.split()) + context_length) * _TOKENS_PER_WORD)
 
         stats_by_model: dict[str, ModelStats] = {
             c.model_id: await self._stats_provider.get_stats(c.model_id) for c in self._candidates
@@ -124,6 +131,22 @@ class Router:
                         normalized_latency,
                         candidate_risk,
                         excluded_reason="provider outage",
+                    )
+                )
+                continue
+            if estimated_tokens > candidate.context_window:
+                results.append(
+                    RoutingCandidateResult(
+                        candidate.model_id,
+                        -1.0,
+                        stats.predicted_quality,
+                        normalized_cost,
+                        normalized_latency,
+                        candidate_risk,
+                        excluded_reason=(
+                            f"request (~{estimated_tokens} tokens) exceeds the model's "
+                            f"{candidate.context_window}-token context window"
+                        ),
                     )
                 )
                 continue

@@ -16,11 +16,11 @@ _USE_ROUTER_DEPRECATION = (
 class GenerateRequest(BaseModel):
     application_id: str
     environment: str = "production"
-    question: str
+    question: str = Field(min_length=1)
     system_prompt: str | None = None
     retrieved_documents: list[RetrievedDocumentIn] | None = None
     dataset_id: str | None = None
-    top_k: int = 3
+    top_k: int = Field(default=3, ge=1, le=50)
     preferred_model: str | None = None
     fallback_models: list[str] = Field(default_factory=list)
     use_router: bool = Field(

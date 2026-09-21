@@ -65,8 +65,12 @@ for what a production secret manager integration would add.
 [`security/pii.py`](../src/sentinellm/security/pii.py) provides a
 `PIIRedactor` protocol and a deterministic `RegexPIIRedactor` default
 (emails, US-shaped phone numbers, SSNs, card-number-shaped digit runs).
-It's wired into `POST /api/v1/traces` behind
-`SENTINEL_PII_REDACTION_ENABLED` (default `false`) — **off by default
+It's applied wherever text is *persisted* — `POST /api/v1/traces`
+ingestion, `POST /api/v1/generate` (and replay, which goes through it), and
+the semantic cache (whose entries are replayed to other callers) — behind
+`SENTINEL_PII_REDACTION_ENABLED` (default `false`). On `/generate` the model
+still receives the original text; only the stored trace (prompt, system
+prompt, response, retrieved documents) and cache entry are redacted. **Off by default
 deliberately**: redaction is lossy, and a faithfulness/hallucination check
 run against a redacted answer is checking something subtly different from
 what the model actually said. Enable it in any environment handling real

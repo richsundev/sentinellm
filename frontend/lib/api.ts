@@ -201,8 +201,8 @@ export const api = {
     mutate<AlertRule>(`/alerts/rules/${encodeURIComponent(rule)}`, { method: "PATCH", body: payload }),
 
   // Application / API key management (Settings page).
-  listApplications: () => request<Paginated<Application>>("/applications"),
-  listApiKeys: () => request<Paginated<ApiKey>>("/applications/api-keys"),
+  listApplications: () => request<Paginated<Application>>("/applications", { limit: 200 }),
+  listApiKeys: () => request<Paginated<ApiKey>>("/applications/api-keys", { limit: 200 }),
   createApiKey: (payload: {
     application_id: string;
     name: string;

@@ -42,6 +42,33 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - This changelog.
 
 ### Fixed
+- **Second bug audit.** Each item reproduced with a failing test first.
+  - *Model health*: a model flagged down was excluded from routing, so it
+    earned no traffic and stayed down forever — it now returns to `degraded`
+    once its failures leave the window. Calls that failed before a fallback
+    answered are recorded (`trace_metadata.failed_attempts`) and counted, so a
+    model failing behind a working fallback is finally flagged; cache hits no
+    longer dilute a model's error rate. Replay no longer copies that
+    bookkeeping (or rollout attribution) onto the new trace.
+  - *Routing*: the context window was carried into the router and never read;
+    a request that cannot fit is no longer sent to the model.
+  - *Evaluation*: cosine similarity could exceed 1.0 by a rounding hair, which
+    failed the judge fallback's validation and the whole evaluation job; real
+    judge models that wrap their JSON in a markdown fence or a sentence no
+    longer burn every retry and fall back to a meaningless score.
+  - *PII*: redaction is now applied on `/generate`, replay and the semantic
+    cache (previously `POST /traces` only), and to retrieved documents.
+  - *API*: `/generate` rejects `top_k` outside 1–50 and an empty question;
+    ingested traces are priced from the model registry like `/generate`
+    traces; trace tags are bounded; `q`/`tag` search treats `%` and `_`
+    literally; replaying an empty-prompt trace is a 422, not a 500.
+  - *Database*: connections are pre-pinged, so a Postgres restart doesn't
+    500 the first requests on every pooled connection.
+  - *Frontend*: an application's cost budget could not be cleared (`undefined`
+    is dropped from JSON — it must be `null`); failed budget/alert-rule saves
+    were silent; an emptied alert-threshold box saved as `0` and made the rule
+    fire constantly; the Traces page kept its page offset when the
+    environment changed.
 - **Project-wide bug audit.** Each item below was reproduced with a failing
   test first.
   - *Money and metrics*: `/metrics/cost` summed a 5,000-row sample, silently

@@ -34,8 +34,13 @@ def _to_async_url(url: str) -> str:
 def get_engine() -> AsyncEngine:
     settings = get_settings()
     url = _to_async_url(settings.database_url)
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_async_engine(url, echo=False, future=True, connect_args=connect_args)
+    if url.startswith("sqlite"):
+        return create_async_engine(
+            url, echo=False, future=True, connect_args={"check_same_thread": False}
+        )
+    # pre_ping: after a database restart or a dropped idle connection, the pool
+    # would otherwise hand the first requests a dead connection (a 500 each).
+    return create_async_engine(url, echo=False, future=True, pool_pre_ping=True)
 
 
 @lru_cache
