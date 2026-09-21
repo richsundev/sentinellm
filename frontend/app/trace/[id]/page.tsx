@@ -87,7 +87,8 @@ export default function TraceDetailPage() {
       key: "routing_score",
       header: "Routing score",
       align: "right",
-      render: (c) => c.routing_score.toFixed(3),
+      // An excluded model was never scored; the -1.000 it carries is a marker.
+      render: (c) => (c.excluded_reason ? "—" : c.routing_score.toFixed(3)),
       sortValue: (c) => c.routing_score,
     },
     {
@@ -117,6 +118,14 @@ export default function TraceDetailPage() {
       align: "right",
       render: (c) => c.risk.toFixed(3),
       sortValue: (c) => c.risk,
+    },
+    {
+      key: "excluded_reason",
+      header: "Note",
+      render: (c) =>
+        c.excluded_reason ? (
+          <span className="text-xs text-err">excluded: {c.excluded_reason}</span>
+        ) : null,
     },
   ];
 

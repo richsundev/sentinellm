@@ -52,16 +52,23 @@ def choose_arm(rollout: PromptRollout) -> tuple[int, str]:
 async def create_prompt_rollout(
     session: AsyncSession, payload: PromptRolloutCreate
 ) -> PromptRollout:
+    statuses: dict[int, str] = {}
     for version in (payload.incumbent_version, payload.challenger_version):
-        found = (
+        status = (
             await session.execute(
-                select(PromptVersion.id).where(
+                select(PromptVersion.status).where(
                     PromptVersion.prompt_id == payload.prompt_id, PromptVersion.version == version
                 )
             )
-        ).first()
-        if found is None:
+        ).scalar_one_or_none()
+        if status is None:
             raise PromptRolloutInputError(f"prompt '{payload.prompt_id}' v{version} not found")
+        statuses[version] = status
+    if statuses[payload.challenger_version] == "deprecated":
+        raise PromptRolloutConflictError(
+            f"challenger '{payload.prompt_id}' v{payload.challenger_version} is deprecated — "
+            "the worker would roll it back on its first pass"
+        )
 
     existing = await get_latest_prompt_rollout(session, payload.application_id, payload.prompt_id)
     if existing is not None and existing.stage in ("running", "paused"):

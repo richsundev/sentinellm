@@ -208,7 +208,7 @@ router/cache/evaluation pipeline, including a deliberately engineered
 prompt+model regression that the regression detector finds for real:
 
 ```
-REGRESSION DETECTED: faithfulness 0.5528 -> 0.5067 (-8.3%, low)
+REGRESSION DETECTED: faithfulness 0.5528 -> 0.5067 (degraded 8.3%, low)
   — model changed mock:sentinel-pro -> mock:sentinel-nano;
     prompt changed support-answer:v1 -> support-answer:v2
 ```

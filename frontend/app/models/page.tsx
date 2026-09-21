@@ -17,6 +17,7 @@ import { Panel } from "@/components/Panel";
 import { DataTable, type Column } from "@/components/DataTable";
 import { ErrorState, Skeleton, SkeletonTable } from "@/components/StateViews";
 import type { ModelInfo, ModelStatus } from "@/lib/types";
+import { FormError, parseNumberField } from "@/lib/validate";
 import { formatMs, formatPercent } from "@/lib/format";
 
 const STATUS_OPTIONS: ModelStatus[] = ["healthy", "degraded", "down"];
@@ -27,26 +28,26 @@ export default function ModelsPage() {
     []
   );
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
-  async function handleStatusChange(modelId: string, status: ModelStatus) {
+  async function update(modelId: string, patch: { status?: ModelStatus; status_auto?: boolean }) {
     setUpdatingId(modelId);
+    setUpdateError(null);
     try {
-      await api.updateModel(modelId, { status });
+      await api.updateModel(modelId, patch);
       await refetch();
+    } catch (err) {
+      // A failed change used to vanish silently (and surface as an unhandled
+      // promise rejection), leaving the dropdown showing a status that hadn't
+      // been saved.
+      setUpdateError(err instanceof ApiError ? err.message : "Failed to update the model");
     } finally {
       setUpdatingId(null);
     }
   }
 
-  async function handleResetToAuto(modelId: string) {
-    setUpdatingId(modelId);
-    try {
-      await api.updateModel(modelId, { status_auto: true });
-      await refetch();
-    } finally {
-      setUpdatingId(null);
-    }
-  }
+  const handleStatusChange = (modelId: string, status: ModelStatus) => update(modelId, { status });
+  const handleResetToAuto = (modelId: string) => update(modelId, { status_auto: true });
 
   const columns: Column<ModelInfo>[] = [
     {
@@ -149,6 +150,7 @@ export default function ModelsPage() {
       <RegisterModelPanel onCreated={refetch} />
 
       {error && <ErrorState message={error} onRetry={refetch} />}
+      {updateError && <p className="text-xs text-red-400">{updateError}</p>}
 
       {!error && (
         <Panel title="Quality vs cost">
@@ -239,8 +241,8 @@ function RegisterModelPanel({ onCreated }: { onCreated: () => void }) {
         id: id.trim(),
         name: name.trim(),
         provider: provider.trim(),
-        input_price_per_1k: Number(inputPrice),
-        output_price_per_1k: Number(outputPrice),
+        input_price_per_1k: parseNumberField("In $/1K", inputPrice, { min: 0 }),
+        output_price_per_1k: parseNumberField("Out $/1K", outputPrice, { min: 0 }),
       });
       setId("");
       setName("");
@@ -249,7 +251,11 @@ function RegisterModelPanel({ onCreated }: { onCreated: () => void }) {
       setOutputPrice("");
       onCreated();
     } catch (err) {
-      setCreateError(err instanceof ApiError ? err.message : "Failed to register model");
+      setCreateError(
+        err instanceof ApiError || err instanceof FormError
+          ? err.message
+          : "Failed to register model"
+      );
     } finally {
       setCreating(false);
     }

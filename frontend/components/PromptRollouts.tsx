@@ -16,6 +16,7 @@ import {
 } from "@/components/RolloutParts";
 import { formatCost, formatDate, formatMs, formatPercent } from "@/lib/format";
 import type { PromptArmStats, PromptRollout } from "@/lib/types";
+import { FormError, parseRolloutGuards } from "@/lib/validate";
 
 /** The "Prompt canaries" tab: progressive rollouts of one prompt version over another. */
 export function PromptRollouts() {
@@ -164,23 +165,28 @@ function StartPromptRolloutPanel({ onCreated }: { onCreated: () => void }) {
     setCreating(true);
     setCreateError(null);
     try {
+      const guards = parseRolloutGuards({
+        initialPct,
+        qualityFloor,
+        maxDrop,
+        maxErrorRate,
+        minSample,
+        stepPct,
+      });
       await api.createPromptRollout({
         application_id: applicationId.trim(),
         prompt_id: promptId,
         incumbent_version: Number(incumbent),
         challenger_version: Number(challenger),
-        initial_pct: Number(initialPct),
-        quality_floor: Number(qualityFloor),
-        max_quality_regression: Number(maxDrop),
-        max_error_rate: Number(maxErrorRate),
-        min_sample_size: Number(minSample),
-        step_pct: Number(stepPct),
+        ...guards,
       });
       setApplicationId("");
       onCreated();
     } catch (err) {
       setCreateError(
-        err instanceof ApiError ? err.message : "Failed to start the rollout",
+        err instanceof ApiError || err instanceof FormError
+          ? err.message
+          : "Failed to start the rollout",
       );
     } finally {
       setCreating(false);

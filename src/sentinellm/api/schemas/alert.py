@@ -40,7 +40,13 @@ class RegressionOut(BaseModel):
     metric_name: str
     previous_value: float
     new_value: float
-    delta_pct: float
+    delta_pct: float = Field(
+        description=(
+            "How much worse the metric got, in percent (0-100 scale, capped at 1000): always "
+            "positive. Direction is in previous_value vs new_value — a latency or "
+            "hallucination regression goes *up*."
+        )
+    )
     severity: str
     detected_at: datetime
     application_id: str

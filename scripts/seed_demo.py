@@ -44,7 +44,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -60,10 +60,19 @@ from sentinellm.db.models import (
     Dataset,
     DatasetRecord,
     Evaluation,
+    EvaluationMetric,
     Experiment,
+    HallucinationClaim,
     ModelPricing,
+    ModelRollout,
+    PromptRollout,
     PromptVersion,
+    Regression,
+    RoutingDecision,
+    SemanticCacheEntry,
     Trace,
+    TraceFeedback,
+    TraceSpan,
 )
 from sentinellm.db.session import get_sessionmaker, init_models
 from sentinellm.pricing.catalog import DEFAULT_MODEL_CATALOG
@@ -77,6 +86,9 @@ from sentinellm.worker.tasks.regression import detect_regressions_for_applicatio
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATASET_PATH = REPO_ROOT / "datasets" / "support_bench_v1.jsonl"
 APPLICATION_NAME = "support-bot"
+DEMO_DATASET_NAME = "support-bench"
+DEMO_DATASET_VERSION = "v1"
+DEMO_PROMPT_IDS = ["support-answer", "checkout-answer"]
 CHECKOUT_APPLICATION_NAME = "checkout-assistant"
 
 _COMPLEX_QUESTIONS = [
@@ -105,8 +117,62 @@ async def _already_seeded(session: AsyncSession) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+async def _reset_demo_data(session: AsyncSession) -> None:
+    """Deletes what a previous seed run created — the two demo applications and
+    everything recorded under them, the demo dataset, and the demo prompts —
+    so `--force` can reseed. Anything else in the database is left alone."""
+    apps = (
+        (
+            await session.execute(
+                select(Application).where(
+                    Application.name.in_([APPLICATION_NAME, CHECKOUT_APPLICATION_NAME])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # A trace's `application_id` is the row's id or its name, depending on who
+    # recorded it (the seed uses ids; SDK examples use slugs).
+    application_ids = {a.id for a in apps} | {a.name for a in apps}
+    if application_ids:
+        trace_ids = select(Trace.id).where(Trace.application_id.in_(application_ids))
+        evaluation_ids = select(Evaluation.id).where(Evaluation.trace_id.in_(trace_ids))
+        for model in (HallucinationClaim, EvaluationMetric):
+            await session.execute(delete(model).where(model.evaluation_id.in_(evaluation_ids)))
+        for model in (Evaluation, TraceSpan, RoutingDecision, TraceFeedback):
+            await session.execute(delete(model).where(model.trace_id.in_(trace_ids)))
+        await session.execute(delete(Trace).where(Trace.application_id.in_(application_ids)))
+        for model in (Regression, ModelRollout, PromptRollout, SemanticCacheEntry):
+            await session.execute(delete(model).where(model.application_id.in_(application_ids)))
+
+    dataset_ids = select(Dataset.id).where(
+        Dataset.name == DEMO_DATASET_NAME, Dataset.version == DEMO_DATASET_VERSION
+    )
+    await session.execute(
+        delete(Experiment).where(
+            or_(Experiment.prompt_id.in_(DEMO_PROMPT_IDS), Experiment.dataset_id.in_(dataset_ids))
+        )
+    )
+    await session.execute(delete(PromptVersion).where(PromptVersion.prompt_id.in_(DEMO_PROMPT_IDS)))
+    await session.execute(delete(DatasetRecord).where(DatasetRecord.dataset_id.in_(dataset_ids)))
+    await session.execute(
+        delete(Dataset).where(
+            Dataset.name == DEMO_DATASET_NAME, Dataset.version == DEMO_DATASET_VERSION
+        )
+    )
+    if apps:
+        await session.execute(delete(APIKey).where(APIKey.application_id.in_([a.id for a in apps])))
+        await session.execute(delete(Application).where(Application.id.in_([a.id for a in apps])))
+    await session.flush()
+    print("  cleared the previous demo data")
+
+
 async def _seed_models(session: AsyncSession) -> None:
+    existing = set((await session.execute(select(ModelPricing.id))).scalars().all())
     for profile in DEFAULT_MODEL_CATALOG.values():
+        if profile.id in existing:
+            continue  # a registry an operator already edited is left as it is
         session.add(
             ModelPricing(
                 id=profile.id,
@@ -121,7 +187,7 @@ async def _seed_models(session: AsyncSession) -> None:
             )
         )
     await session.flush()
-    print(f"  seeded {len(DEFAULT_MODEL_CATALOG)} models into the pricing catalog")
+    print(f"  model catalog ready ({len(DEFAULT_MODEL_CATALOG)} models)")
 
 
 async def _seed_application_and_key(session: AsyncSession) -> Application:
@@ -161,7 +227,9 @@ async def _seed_application_and_key(session: AsyncSession) -> Application:
 async def _seed_dataset(session: AsyncSession) -> Dataset:
     records = _load_dataset_records()
     dataset = Dataset(
-        name="support-bench", version="v1", description="Realistic customer-support Q&A benchmark"
+        name=DEMO_DATASET_NAME,
+        version=DEMO_DATASET_VERSION,
+        description="Realistic customer-support Q&A benchmark",
     )
     dataset.records = [
         DatasetRecord(
@@ -517,6 +585,8 @@ async def seed(force: bool = False) -> None:
             )
             return
 
+        if force:
+            await _reset_demo_data(session)
         print("Seeding SentinelLLM demo data...")
         await _seed_models(session)
         app_row = await _seed_application_and_key(session)
@@ -538,7 +608,7 @@ async def seed(force: bool = False) -> None:
         for r in regressions:
             print(
                 f"    REGRESSION DETECTED: {r.metric_name} {r.previous_value} -> {r.new_value} "
-                f"({r.delta_pct:+.1f}%, {r.severity}) — {r.likely_cause}"
+                f"(degraded {r.delta_pct:.1f}%, {r.severity}) — {r.likely_cause}"
             )
 
         print("  running alert rule evaluation...")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -98,7 +100,7 @@ async def list_prompt_versions(
 @router.patch("/{prompt_id}/versions/{version}", response_model=PromptVersionOut)
 async def update_prompt_status(
     prompt_id: str,
-    version: int,
+    version: Annotated[int, Path(ge=1, le=2_147_483_647)],
     payload: PromptStatusUpdate,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireWrite),
@@ -122,7 +124,7 @@ async def update_prompt_status(
 )
 async def render_prompt_version(
     prompt_id: str,
-    version: int,
+    version: Annotated[int, Path(ge=1, le=2_147_483_647)],
     payload: PromptRenderRequest,
     db: AsyncSession = Depends(get_db),
 ) -> PromptRenderOut:
@@ -141,7 +143,7 @@ async def render_prompt_version(
 @router.post("/{prompt_id}/versions/{version}/promote", response_model=PromptPromotionOut)
 async def promote_prompt_version_endpoint(
     prompt_id: str,
-    version: int,
+    version: Annotated[int, Path(ge=1, le=2_147_483_647)],
     payload: PromptPromoteRequest,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireWrite),

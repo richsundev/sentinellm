@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from sentinellm.api.schemas.common import NulStrippingModel
 
@@ -12,8 +12,10 @@ PromptStatus = Literal["draft", "testing", "production", "deprecated"]
 
 class PromptVersionCreate(NulStrippingModel):
     prompt_id: str = Field(min_length=1, max_length=200)
-    template: str
-    variables: list[str] = Field(default_factory=list)
+    template: str = Field(min_length=1, max_length=200_000)
+    variables: list[Annotated[str, StringConstraints(max_length=50)]] = Field(
+        default_factory=list, max_length=50
+    )
     status: PromptStatus = "draft"
     author: str = Field(default="unknown", max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)

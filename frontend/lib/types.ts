@@ -56,6 +56,8 @@ export interface RoutingCandidate {
   normalized_cost: number;
   normalized_latency: number;
   risk: number;
+  // Why the router ruled this model out (outage, quality floor, context window…).
+  excluded_reason?: string | null;
 }
 
 export interface RoutingDecision {
@@ -300,6 +302,7 @@ export interface Dataset {
   id: string;
   name: string;
   version: string;
+  description?: string | null;
   record_count: number;
   created_at: string;
 }

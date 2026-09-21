@@ -57,8 +57,16 @@ async def evaluation_consumer_loop(stop_event: asyncio.Event) -> None:
             continue
         if trace_db_id is None:
             continue
-        async with session_factory() as session:
-            await process_evaluation_job(session, pipeline, trace_db_id)
+        try:
+            async with session_factory() as session:
+                await process_evaluation_job(session, pipeline, trace_db_id)
+        except Exception:
+            # Claiming the trace is a database call that can fail (a dropped
+            # connection, a deadlock). This loop is one of several under
+            # `asyncio.gather`, so an escaping exception would end the whole
+            # worker. The job isn't lost: the trace is still `pending`, and
+            # `evaluation_recovery` re-queues it.
+            logger.exception("evaluation_job_crashed", trace_db_id=trace_db_id)
 
 
 async def _sample_queue_depth(_session: AsyncSession) -> None:

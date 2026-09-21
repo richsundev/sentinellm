@@ -17,6 +17,7 @@ import {
   Stat,
 } from "@/components/RolloutParts";
 import { PromptRollouts } from "@/components/PromptRollouts";
+import { FormError, parseRolloutGuards } from "@/lib/validate";
 
 export default function RolloutsPage() {
   const [tab, setTab] = useState<"models" | "prompts">("models");
@@ -175,22 +176,27 @@ function StartRolloutPanel({ onCreated }: { onCreated: () => void }) {
     setCreating(true);
     setCreateError(null);
     try {
+      const guards = parseRolloutGuards({
+        initialPct,
+        qualityFloor,
+        maxDrop: maxQualityRegression,
+        maxErrorRate,
+        minSample: minSampleSize,
+        stepPct,
+      });
       await api.createRollout({
         application_id: applicationId.trim(),
         incumbent_model: incumbentModel,
         challenger_model: challengerModel,
-        initial_pct: Number(initialPct),
-        quality_floor: Number(qualityFloor),
-        max_quality_regression: Number(maxQualityRegression),
-        max_error_rate: Number(maxErrorRate),
-        min_sample_size: Number(minSampleSize),
-        step_pct: Number(stepPct),
+        ...guards,
       });
       setApplicationId("");
       onCreated();
     } catch (err) {
       setCreateError(
-        err instanceof ApiError ? err.message : "Failed to start rollout",
+        err instanceof ApiError || err instanceof FormError
+          ? err.message
+          : "Failed to start rollout",
       );
     } finally {
       setCreating(false);

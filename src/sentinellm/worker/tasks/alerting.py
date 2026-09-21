@@ -11,12 +11,11 @@ serve only as the seed value the first time a rule is created, via
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.core.config import get_settings
@@ -27,6 +26,9 @@ from sentinellm.observability.metrics import ALERTS_FIRED_TOTAL
 logger = get_logger(__name__)
 
 _WINDOW = timedelta(hours=1)
+# Budgets are per *day*, so spend is measured over a day. (It used to be
+# measured over `_WINDOW`: a $50/day budget alerted only past $50 in one hour.)
+_COST_WINDOW = timedelta(hours=24)
 _DEDUPE_WINDOW = timedelta(hours=1)
 
 
@@ -63,7 +65,7 @@ RULE_DEFINITIONS: list[RuleDefinition] = [
         "medium",
         "sentinel-router",
         "above",
-        "Total estimated LLM spend (USD) in the trailing 1h window.",
+        "Total estimated LLM spend (USD) in the trailing 24h window.",
     ),
     RuleDefinition(
         "quality_score",
@@ -93,10 +95,18 @@ async def ensure_default_alert_rules(session: AsyncSession) -> list[AlertRuleCon
     thresholds are never touched.
     """
     settings = get_settings()
-    existing = {r.rule for r in (await session.execute(select(AlertRuleConfig))).scalars().all()}
+    existing_rows = {
+        r.rule: r for r in (await session.execute(select(AlertRuleConfig))).scalars().all()
+    }
     created: list[AlertRuleConfig] = []
+    described = False
     for definition in RULE_DEFINITIONS:
-        if definition.rule in existing:
+        row = existing_rows.get(definition.rule)
+        if row is not None:
+            # Only the prose is refreshed — never an operator-edited threshold.
+            if row.description != definition.description:
+                row.description = definition.description
+                described = True
             continue
         row = AlertRuleConfig(
             rule=definition.rule,
@@ -107,7 +117,7 @@ async def ensure_default_alert_rules(session: AsyncSession) -> list[AlertRuleCon
         )
         session.add(row)
         created.append(row)
-    if created:
+    if created or described:
         await session.commit()
     return created
 
@@ -163,9 +173,18 @@ async def deliver_alert_webhook(alert: Alert) -> None:
     )
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(settings.alert_webhook_url, json=payload)
-    except httpx.HTTPError:
-        logger.warning("alert_webhook_delivery_failed", rule=alert.rule)
+            response = await client.post(settings.alert_webhook_url, json=payload)
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
+        # `InvalidURL` isn't an `HTTPError`; a mistyped URL used to escape and
+        # abort the pass that was about to persist the alert.
+        logger.warning("alert_webhook_delivery_failed", rule=alert.rule, error=str(exc))
+        return
+    if response.status_code >= 400:
+        # The request went through but the receiver refused it (a revoked Slack
+        # URL, a rejected payload) — that is a failed delivery, not a delivered one.
+        logger.warning(
+            "alert_webhook_delivery_failed", rule=alert.rule, status=response.status_code
+        )
 
 
 async def _fire(
@@ -215,29 +234,32 @@ async def evaluate_alert_rules(session: AsyncSession) -> list[Alert]:
     since = datetime.now(UTC) - _WINDOW
     traces = (await session.execute(select(Trace).where(Trace.created_at >= since))).scalars().all()
     fired: list[Alert] = []
-    if not traces:
-        return fired
 
-    current_values: dict[str, float] = {
-        "error_rate": sum(1 for t in traces if t.status == "error") / len(traces),
-        "daily_cost": sum(t.estimated_cost for t in traces),
-    }
-    latencies = sorted(t.latency_ms for t in traces)
-    current_values["p95_latency"] = latencies[min(len(latencies) - 1, int(0.95 * len(latencies)))]
+    # Spend is a day's worth and independent of the last hour's traffic: a quiet
+    # hour must not hide a day that is already over budget.
+    total_spend, spend_by_application = await _spend_over_the_day(session)
+    current_values: dict[str, float] = {"daily_cost": total_spend}
 
-    trace_ids = [t.id for t in traces]
-    evaluations = (
-        (await session.execute(select(Evaluation).where(Evaluation.trace_id.in_(trace_ids))))
-        .scalars()
-        .all()
-    )
-    if evaluations:
-        current_values["quality_score"] = sum(e.overall_quality for e in evaluations) / len(
-            evaluations
+    if traces:
+        current_values["error_rate"] = sum(1 for t in traces if t.status == "error") / len(traces)
+        latencies = sorted(t.latency_ms for t in traces)
+        current_values["p95_latency"] = latencies[
+            min(len(latencies) - 1, int(0.95 * len(latencies)))
+        ]
+
+        trace_ids = [t.id for t in traces]
+        evaluations = (
+            (await session.execute(select(Evaluation).where(Evaluation.trace_id.in_(trace_ids))))
+            .scalars()
+            .all()
         )
-        current_values["hallucination_rate"] = sum(
-            e.hallucination_score for e in evaluations
-        ) / len(evaluations)
+        if evaluations:
+            current_values["quality_score"] = sum(e.overall_quality for e in evaluations) / len(
+                evaluations
+            )
+            current_values["hallucination_rate"] = sum(
+                e.hallucination_score for e in evaluations
+            ) / len(evaluations)
 
     for rule_name, current in current_values.items():
         config = rule_configs.get(rule_name)
@@ -265,18 +287,33 @@ async def evaluate_alert_rules(session: AsyncSession) -> list[Alert]:
             )
         )
 
-    fired.extend(await _evaluate_application_budgets(session, traces))
+    fired.extend(await _evaluate_application_budgets(session, spend_by_application))
 
     if fired:
         await session.commit()
     return fired
 
 
+async def _spend_over_the_day(session: AsyncSession) -> tuple[float, dict[str, float]]:
+    """(total, per `Trace.application_id`) estimated cost over `_COST_WINDOW`,
+    aggregated in the database — a day of traces is far too many to load."""
+    since = datetime.now(UTC) - _COST_WINDOW
+    rows = (
+        await session.execute(
+            select(Trace.application_id, func.coalesce(func.sum(Trace.estimated_cost), 0.0))
+            .where(Trace.created_at >= since)
+            .group_by(Trace.application_id)
+        )
+    ).all()
+    by_application = {application_id: float(cost) for application_id, cost in rows}
+    return sum(by_application.values()), by_application
+
+
 async def _evaluate_application_budgets(
-    session: AsyncSession, traces: Sequence[Trace]
+    session: AsyncSession, spend_by_application: dict[str, float]
 ) -> list[Alert]:
     """Per-`Application.daily_cost_budget` overage check, over the same
-    trailing window as `daily_cost` above. Separate from `RULE_DEFINITIONS`
+    trailing 24h as `daily_cost` above. Separate from `RULE_DEFINITIONS`
     because the threshold is per-application rather than a single global
     value, so it can't live in the one-row-per-rule `alert_rules` table.
     Traces are matched against both `Application.id` and `Application.name`
@@ -296,20 +333,12 @@ async def _evaluate_application_budgets(
     if not budgeted_apps:
         return []
 
-    cost_by_application_id: dict[str, float] = {}
-    for t in traces:
-        cost_by_application_id[t.application_id] = (
-            cost_by_application_id.get(t.application_id, 0.0) + t.estimated_cost
-        )
-
     fired: list[Alert] = []
     for app in budgeted_apps:
         budget = app.daily_cost_budget
         if budget is None:
             continue
-        current = cost_by_application_id.get(app.id, 0.0) + cost_by_application_id.get(
-            app.name, 0.0
-        )
+        current = spend_by_application.get(app.id, 0.0) + spend_by_application.get(app.name, 0.0)
         affected_service = f"app:{app.name}"
         if current <= budget or await _already_alerted(
             session, "app_cost_budget", affected_service=affected_service

@@ -90,3 +90,46 @@ async def test_alert_delivers_generic_format_by_default(
     assert route.called
     sent = json.loads(route.calls.last.request.content)
     assert sent["rule"] == "error_rate"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_webhook_that_rejects_the_alert_is_reported_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 4xx/5xx is a delivery failure (a revoked Slack URL, a bad payload);
+    only transport errors used to be logged, so it looked like it had worked."""
+    from structlog.testing import capture_logs
+
+    from sentinellm.db.models import Alert
+
+    respx.post("http://example.test/hook").mock(return_value=httpx.Response(410))
+    monkeypatch.setattr(
+        alerting, "get_settings", lambda: Settings(alert_webhook_url="http://example.test/hook")
+    )
+    alert = Alert(
+        rule="error_rate", current_value=1, threshold=0.5, severity="high", affected_service="s"
+    )
+
+    with capture_logs() as logs:
+        await alerting.deliver_alert_webhook(alert)
+
+    failed = [entry for entry in logs if entry["event"] == "alert_webhook_delivery_failed"]
+    assert failed and failed[0]["status"] == 410
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_webhook_url_cannot_break_the_alert_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Delivery runs inside the pass that persists the alert; anything it
+    raised aborted the pass, so the alert was never stored and re-failed
+    forever."""
+    from sentinellm.db.models import Alert
+
+    monkeypatch.setattr(alerting, "get_settings", lambda: Settings(alert_webhook_url="http://[::1"))
+    alert = Alert(
+        rule="error_rate", current_value=1, threshold=0.5, severity="high", affected_service="s"
+    )
+
+    await alerting.deliver_alert_webhook(alert)  # must not raise

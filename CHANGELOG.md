@@ -60,6 +60,31 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - This changelog.
 
 ### Fixed
+- **Fourth bug audit.**
+  - *Cost alerts*: `daily_cost` and every application's `daily_cost_budget`
+    were compared with the spend of the trailing **hour**, so a $50/day budget
+    only alerted past $50 in a single hour (~$1,200/day). Spend is now measured
+    over 24h, aggregated in SQL, and no longer skipped when the last hour was
+    quiet.
+  - *Worker*: an exception while claiming an evaluation job (a dropped DB
+    connection) escaped the consumer loop and took every worker loop down with
+    it; alert webhooks that answered 4xx/5xx counted as delivered, and a
+    mistyped webhook URL (`httpx.InvalidURL`) aborted the pass that was about to
+    persist the alert.
+  - *Prompts*: `POST /prompts/{id}/versions/{v}/…` took an unbounded integer
+    (500 on overflow); templates and declared variables are bounded; a canary
+    can't be started with a deprecated challenger (the worker would have rolled
+    it back on its first pass).
+  - *Seed*: `scripts/seed_demo.py --force` crashed on the model catalog's
+    unique constraint; it now clears the demo's own data (and only that) and
+    reseeds. Regression output no longer prints a degradation as `+8.3%`.
+  - *Frontend*: numeric forms (model registration, model and prompt canaries)
+    sent `null` for a blank or non-numeric field and showed a generic error —
+    they now name the field; failed model status changes were silent; the trace
+    page hides the router's `-1` marker score and shows *why* a model was
+    excluded (outage, quality floor, context window).
+  - New test: a schema-driven fuzz of every JSON write endpoint (also run
+    against Postgres during the audit — 0 server errors in 1,223 requests).
 - **Third bug audit** (Postgres-vs-SQLite divergences, platform edges).
   - *Inputs SQLite accepted and Postgres rejected (each a 500 in production)*:
     NUL characters in any text (now stripped from request bodies, LLM output

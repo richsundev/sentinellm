@@ -76,3 +76,41 @@ describe("Trace detail — served prompts", () => {
     expect(screen.queryByText(/^prompt$/)).not.toBeInTheDocument();
   });
 });
+
+describe("Trace detail — routing candidates", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("says why a candidate model was excluded instead of showing its -1 marker score", async () => {
+    mockApi({
+      "GET /traces/trc_1": trace({
+        routing_decision: {
+          trace_id: "trc_1",
+          selected_model: "mock:sentinel-pro",
+          reason: "picked pro",
+          created_at: "2026-09-01T00:00:00Z",
+          candidates: [
+            { model: "mock:sentinel-pro", routing_score: 0.61, predicted_quality: 0.9, normalized_cost: 0.5, normalized_latency: 0.4, risk: 0.1 },
+            {
+              model: "mock:sentinel-nano",
+              routing_score: -1,
+              predicted_quality: 0.4,
+              normalized_cost: 0,
+              normalized_latency: 0,
+              risk: 0.1,
+              excluded_reason: "request (~9000 tokens) exceeds the model's 8000-token context window",
+            },
+          ],
+        },
+      }),
+      "GET /models": page([]),
+    });
+    render(<TraceDetailPage />);
+
+    expect(await screen.findByText(/excluded: request \(~9000 tokens\)/)).toBeInTheDocument();
+    expect(screen.queryByText("-1.000")).not.toBeInTheDocument();
+    expect(screen.getByText("0.610")).toBeInTheDocument();
+  });
+});

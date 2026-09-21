@@ -271,3 +271,40 @@ async def test_a_terminal_rollout_keeps_pinning_the_application(
         for i in range(6)
     }
     assert after == {2}  # the newer rollout (0% to v1) supersedes the old pin
+
+
+@pytest.mark.asyncio
+async def test_a_deprecated_challenger_cannot_be_rolled_out(client: AsyncClient) -> None:
+    """The worker rolls a deprecated challenger back on its first pass, so
+    starting one is only ever a rollout that dies immediately (and alerts)."""
+    await _versions(client, "production", "deprecated")
+
+    resp = await client.post("/api/v1/prompt-rollouts", json=_body())
+
+    assert resp.status_code == 409
+    assert "deprecated" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_deprecated_incumbent_is_fine_it_is_being_replaced(client: AsyncClient) -> None:
+    await _versions(client, "deprecated", "testing")
+
+    assert (await client.post("/api/v1/prompt-rollouts", json=_body())).status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_prompt_templates_and_declared_variables_are_bounded(client: AsyncClient) -> None:
+    huge = await client.post(
+        "/api/v1/prompts", json={"prompt_id": "big", "template": "x" * 300_000}
+    )
+    many = await client.post(
+        "/api/v1/prompts",
+        json={"prompt_id": "many", "template": "t", "variables": [f"v{i}" for i in range(80)]},
+    )
+    long_name = await client.post(
+        "/api/v1/prompts", json={"prompt_id": "long", "template": "t", "variables": ["v" * 80]}
+    )
+
+    assert huge.status_code == 422
+    assert many.status_code == 422
+    assert long_name.status_code == 422
