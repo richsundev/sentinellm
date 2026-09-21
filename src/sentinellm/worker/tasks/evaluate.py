@@ -13,7 +13,7 @@ from sqlalchemy import update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.core.logging import get_logger
+from sentinellm.core.logging import get_logger, trace_id_var
 from sentinellm.db.models import Trace
 from sentinellm.evaluation.pipeline import EvaluationPipeline
 from sentinellm.observability.metrics import EVALUATION_SCORE
@@ -49,6 +49,7 @@ async def _process_evaluation_job(
         logger.warning("evaluation_job_trace_missing", trace_db_id=trace_db_id)
         return False
 
+    token = trace_id_var.set(trace.trace_id)
     try:
         evaluation = await pipeline.run_and_persist(session, trace)
         trace.evaluation_status = "completed"
@@ -62,3 +63,5 @@ async def _process_evaluation_job(
         await session.commit()
         logger.exception("evaluation_job_failed", trace_db_id=trace_db_id)
         return False
+    finally:
+        trace_id_var.reset(token)

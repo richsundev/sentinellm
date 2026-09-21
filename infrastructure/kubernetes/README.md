@@ -71,8 +71,10 @@ Being explicit about this, per the project's engineering-quality bar:
   for credentials), consumed via `envFrom` — never baked into the image.
 - A migration `Job` run to completion before the API/worker rollout, so a
   new pod never starts against a schema it doesn't understand.
-- Readiness/liveness probes wired to the real `/health` endpoint (API) and
-  a real page (frontend), not just "the process is running."
+- Readiness (`/ready`, which checks the database) and liveness (`/health`,
+  which deliberately doesn't — restarting the API doesn't fix a database
+  outage) probes on the API, and a real page for the frontend, not just "the
+  process is running."
 - Horizontal Pod Autoscalers on both the API and worker tiers with
   independent min/max bounds, reflecting that they scale for different
   reasons (request concurrency vs. evaluation throughput).

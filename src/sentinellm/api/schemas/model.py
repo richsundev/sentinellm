@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sentinellm.api.schemas.common import NulStrippingModel
+
 ModelStatus = Literal["healthy", "degraded", "down"]
 
 
@@ -22,13 +24,15 @@ class ModelOut(BaseModel):
     status_reason: str | None
 
 
-class ModelCreate(BaseModel):
-    id: str = Field(description="'provider:name', e.g. 'openai:gpt-4o-mini'")
-    name: str
-    provider: str
+class ModelCreate(NulStrippingModel):
+    id: str = Field(
+        min_length=1, max_length=100, description="'provider:name', e.g. 'openai:gpt-4o-mini'"
+    )
+    name: str = Field(min_length=1, max_length=100)
+    provider: str = Field(min_length=1, max_length=50)
     input_price_per_1k: float = Field(ge=0)
     output_price_per_1k: float = Field(ge=0)
-    context_window: int = Field(default=8192, gt=0)
+    context_window: int = Field(default=8192, gt=0, le=2_147_483_647)
     quality_tier: float = Field(
         default=0.5, ge=0.0, le=1.0, description="Router prior until real trace history exists"
     )
@@ -36,11 +40,11 @@ class ModelCreate(BaseModel):
     status: ModelStatus = "healthy"
 
 
-class ModelUpdate(BaseModel):
-    name: str | None = None
+class ModelUpdate(NulStrippingModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
     input_price_per_1k: float | None = Field(default=None, ge=0)
     output_price_per_1k: float | None = Field(default=None, ge=0)
-    context_window: int | None = Field(default=None, gt=0)
+    context_window: int | None = Field(default=None, gt=0, le=2_147_483_647)
     quality_tier: float | None = Field(default=None, ge=0.0, le=1.0)
     avg_latency_ms_prior: float | None = Field(default=None, gt=0)
     status: ModelStatus | None = None

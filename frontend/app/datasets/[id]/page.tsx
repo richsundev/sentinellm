@@ -19,7 +19,9 @@ export default function DatasetDetailPage() {
     <div className="space-y-4">
       <Panel title={`Dataset ${datasetId}`}>
         <p className="text-xs text-base-400">
-          Showing up to 50 sample records for this dataset version.
+          {data
+            ? `Showing ${data.items.length} of ${data.total} records for this dataset version.`
+            : "Loading records…"}
         </p>
       </Panel>
 

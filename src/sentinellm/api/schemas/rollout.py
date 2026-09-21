@@ -5,13 +5,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from sentinellm.api.schemas.common import NulStrippingModel
+
 RolloutStage = Literal["running", "paused", "promoted", "rolled_back"]
 
 
-class RolloutCreate(BaseModel):
-    application_id: str
-    incumbent_model: str
-    challenger_model: str
+class RolloutCreate(NulStrippingModel):
+    application_id: str = Field(min_length=1, max_length=200)
+    incumbent_model: str = Field(min_length=1, max_length=100)
+    challenger_model: str = Field(min_length=1, max_length=100)
     initial_pct: float = Field(default=10.0, ge=0, le=100)
     quality_floor: float = Field(default=0.7, ge=0, le=1)
     max_quality_regression: float = Field(
@@ -24,7 +26,7 @@ class RolloutCreate(BaseModel):
         ),
     )
     max_error_rate: float = Field(default=0.1, ge=0, le=1)
-    min_sample_size: int = Field(default=10, ge=1)
+    min_sample_size: int = Field(default=10, ge=1, le=1_000_000)
     step_pct: float = Field(default=10.0, gt=0, le=100)
     max_pct: float = Field(default=100.0, gt=0, le=100)
 

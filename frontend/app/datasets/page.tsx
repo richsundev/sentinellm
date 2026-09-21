@@ -25,6 +25,13 @@ export default function DatasetsPage() {
       sortValue: (d) => d.name,
     },
     {
+      // The Experiments form asks for this id; it was only discoverable by
+      // opening the dataset and reading the page title.
+      key: "id",
+      header: "ID",
+      render: (d) => <span className="font-mono text-[11px] text-base-400">{d.id}</span>,
+    },
+    {
       key: "version",
       header: "Version",
       render: (d) => <span className="font-mono text-xs">{d.version}</span>,

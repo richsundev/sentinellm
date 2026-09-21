@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sentinellm.api.schemas.common import NulStrippingModel
+
 
 class AlertRuleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -15,7 +17,7 @@ class AlertRuleOut(BaseModel):
     description: str
 
 
-class AlertRuleUpdate(BaseModel):
+class AlertRuleUpdate(NulStrippingModel):
     threshold: float | None = Field(default=None, ge=0)
     enabled: bool | None = Field(default=None)
 

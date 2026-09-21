@@ -5,17 +5,19 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sentinellm.api.schemas.common import NulStrippingModel
 
-class DatasetRecordIn(BaseModel):
+
+class DatasetRecordIn(NulStrippingModel):
     question: str
     context: str = ""
     expected_answer: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class DatasetCreate(BaseModel):
-    name: str
-    version: str
+class DatasetCreate(NulStrippingModel):
+    name: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1, max_length=50)
     description: str | None = None
     records: list[DatasetRecordIn] = Field(default_factory=list)
 

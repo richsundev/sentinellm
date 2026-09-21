@@ -5,19 +5,21 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sentinellm.api.schemas.common import NulStrippingModel
+
 PromptStatus = Literal["draft", "testing", "production", "deprecated"]
 
 
-class PromptVersionCreate(BaseModel):
-    prompt_id: str
+class PromptVersionCreate(NulStrippingModel):
+    prompt_id: str = Field(min_length=1, max_length=200)
     template: str
     variables: list[str] = Field(default_factory=list)
     status: PromptStatus = "draft"
-    author: str = "unknown"
+    author: str = Field(default="unknown", max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class PromptStatusUpdate(BaseModel):
+class PromptStatusUpdate(NulStrippingModel):
     status: PromptStatus
 
 
@@ -32,7 +34,7 @@ class PromptVersionOut(BaseModel):
     created_at: datetime
 
 
-class PromptPromoteRequest(BaseModel):
+class PromptPromoteRequest(NulStrippingModel):
     quality_pass_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
 
 

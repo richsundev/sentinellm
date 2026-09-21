@@ -21,12 +21,13 @@ from dataclasses import asdict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinellm.api.schemas.common import strip_nul
 from sentinellm.api.schemas.generate import GenerateRequest
 from sentinellm.api.schemas.trace import RetrievedDocumentIn
 from sentinellm.caching.semantic_cache import SemanticCache, context_key_for
 from sentinellm.core.config import get_settings
 from sentinellm.core.ids import new_request_id, new_trace_id
-from sentinellm.core.logging import get_logger
+from sentinellm.core.logging import get_logger, trace_id_var
 from sentinellm.core.queue import enqueue_evaluation
 from sentinellm.db.models import DatasetRecord, ModelPricing, Trace, TraceSpan
 from sentinellm.embeddings.factory import get_embedding_provider
@@ -142,6 +143,10 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
 
 async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     settings = get_settings()
+    # Allocated up front so every log line from retrieval to persistence can be
+    # found by the id the caller will get back.
+    trace_public_id = new_trace_id()
+    trace_id_var.set(trace_public_id)
     t0 = time.perf_counter()
     spans: list[TraceSpan] = []
 
@@ -281,7 +286,10 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         llm_request = LLMRequest(model=selected_model, messages=messages, metadata=request.metadata)
         try:
             resilient_result = await client.complete_with_fallback(llm_request, candidate_chain[1:])
-            response_text = resilient_result.response.content
+            # Model output isn't validated like a request body, and Postgres
+            # cannot store NUL — losing the trace after paying for the call
+            # would be the worst outcome, so drop the character instead.
+            response_text = strip_nul(resilient_result.response.content)
             input_tokens = resilient_result.response.input_tokens
             output_tokens = resilient_result.response.output_tokens
             selected_model = resilient_result.model_used
@@ -351,7 +359,7 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         trace_metadata["rollout_arm"] = rollout_arm
 
     trace = Trace(
-        trace_id=new_trace_id(),
+        trace_id=trace_public_id,
         request_id=new_request_id(),
         application_id=request.application_id,
         environment=request.environment,

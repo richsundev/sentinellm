@@ -13,7 +13,8 @@ brute-force-by-guessing risk a slow adaptive hash defends against, and a
 fast hash is what lets every authenticated request do a single indexed
 lookup instead of an expensive KDF on every call.
 
-Every route except `/health` and the mock webhook receiver requires
+Every route except `/health`, `/ready` and the mock webhook receiver (mounted
+only when `SENTINEL_ENV` is `local` or `test`) requires
 `X-API-Key`; a missing or unrecognized key returns 401
 ([`api/deps.py`](../src/sentinellm/api/deps.py)).
 

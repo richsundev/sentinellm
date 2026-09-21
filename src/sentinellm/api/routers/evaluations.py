@@ -24,7 +24,7 @@ async def list_evaluations(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
     trace_id: str | None = None,
 ) -> Page[EvaluationOut]:
     stmt = select(Evaluation).options(*_LOAD_OPTS)

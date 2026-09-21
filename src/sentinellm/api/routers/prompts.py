@@ -58,7 +58,7 @@ async def create_prompt_version(
 async def list_prompt_versions(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
     prompt_id: str | None = None,
 ) -> Page[PromptVersionOut]:
     stmt = select(PromptVersion)

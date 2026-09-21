@@ -11,10 +11,35 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from sentinellm.api.rate_limit import check_rate_limit, rate_limit_key
+from sentinellm.core.config import get_settings
 from sentinellm.core.logging import request_id_var
 from sentinellm.observability.metrics import REQUEST_LATENCY_SECONDS, REQUESTS_TOTAL
 
 _EXEMPT_PATHS = {"/health", "/metrics"}
+
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Refuses a body whose declared size is over `max_request_bytes` before any
+    of it is read or parsed — otherwise a single request can make the API hold
+    an arbitrarily large JSON document in memory. (A chunked upload declares no
+    length; the dataset import endpoint bounds its own read.)"""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        raw_target = (
+            (request.scope.get("raw_path") or b"").decode("latin-1")
+            + "?"
+            + (request.scope.get("query_string") or b"").decode("latin-1")
+        )
+        if "%00" in raw_target:
+            # Path/query values reach the database as parameters; Postgres
+            # rejects NUL there just as it does in a body.
+            return JSONResponse(status_code=400, content={"detail": "invalid character in URL"})
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > get_settings().max_request_bytes:
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+        return await call_next(request)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

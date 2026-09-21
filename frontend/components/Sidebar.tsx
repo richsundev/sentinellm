@@ -5,9 +5,10 @@ import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { API_BASE_URL } from "@/lib/api";
 
-const NAV_ITEMS: { href: string; label: string; icon: string }[] = [
+const NAV_ITEMS: { href: string; label: string; icon: string; alsoActiveOn?: string }[] = [
   { href: "/overview", label: "Overview", icon: "◈" },
-  { href: "/traces", label: "Traces", icon: "≡" },
+  // The detail page lives at /trace/[id] (singular), so it needs its own match.
+  { href: "/traces", label: "Traces", icon: "≡", alsoActiveOn: "/trace" },
   { href: "/evaluations", label: "Evaluations", icon: "✓" },
   { href: "/regressions", label: "Regressions", icon: "!" },
   { href: "/routing", label: "Routing", icon: "⇄" },
@@ -41,8 +42,10 @@ export function Sidebar() {
 
       <nav className="flex-1 overflow-y-auto py-2">
         {NAV_ITEMS.map((item) => {
-          const active =
-            pathname === item.href || pathname?.startsWith(`${item.href}/`);
+          const prefixes = [item.href, item.alsoActiveOn].filter((p): p is string => !!p);
+          const active = prefixes.some(
+            (prefix) => pathname === prefix || pathname?.startsWith(`${prefix}/`)
+          );
           return (
             <Link
               key={item.href}

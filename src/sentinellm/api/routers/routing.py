@@ -18,7 +18,7 @@ async def list_routing_decisions(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[RoutingDecisionOut]:
     stmt = select(RoutingDecision).options(selectinload(RoutingDecision.trace))
     count_stmt = select(func.count()).select_from(RoutingDecision)

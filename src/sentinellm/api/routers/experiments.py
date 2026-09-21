@@ -72,7 +72,7 @@ async def compare_experiments_endpoint(
 async def list_experiments(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[ExperimentOut]:
     total = (await db.execute(select(func.count()).select_from(Experiment))).scalar_one()
     stmt = select(Experiment).order_by(Experiment.created_at.desc()).limit(limit).offset(offset)

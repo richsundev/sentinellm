@@ -5,15 +5,17 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from sentinellm.api.schemas.common import NulStrippingModel
 
-class RetrievedDocumentIn(BaseModel):
+
+class RetrievedDocumentIn(NulStrippingModel):
     doc_id: str
     content: str
     score: float = 0.0
-    rank: int = 0
+    rank: int = Field(default=0, ge=0, le=2_147_483_647)
 
 
-class SpanIn(BaseModel):
+class SpanIn(NulStrippingModel):
     name: str
     start_ms: float = Field(ge=0)
     duration_ms: float = Field(ge=0)
@@ -21,20 +23,21 @@ class SpanIn(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class TraceCreate(BaseModel):
-    trace_id: str | None = None
-    request_id: str | None = None
-    application_id: str
-    environment: str = "production"
-    model: str
-    provider: str
+class TraceCreate(NulStrippingModel):
+    # Lengths match the columns: Postgres enforces them, SQLite does not.
+    trace_id: str | None = Field(default=None, min_length=1, max_length=64)
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
+    application_id: str = Field(min_length=1, max_length=200)
+    environment: str = Field(default="production", min_length=1, max_length=50)
+    model: str = Field(min_length=1, max_length=100)
+    provider: str = Field(min_length=1, max_length=50)
     prompt: str
     system_prompt: str | None = None
     response: str = ""
     # Counts, times, and cost feed every aggregate (totals, averages,
     # percentiles), so a negative value is not merely odd — it subtracts.
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0, le=2_147_483_647)
+    output_tokens: int = Field(default=0, ge=0, le=2_147_483_647)
     latency_ms: float = Field(default=0.0, ge=0)
     estimated_cost: float | None = Field(default=None, ge=0)
     retrieved_documents: list[RetrievedDocumentIn] = Field(default_factory=list)
@@ -44,8 +47,8 @@ class TraceCreate(BaseModel):
     status: Literal["ok", "error"] = "ok"
     error: str | None = None
     spans: list[SpanIn] = Field(default_factory=list)
-    prompt_id: str | None = None
-    prompt_version: int | None = None
+    prompt_id: str | None = Field(default=None, max_length=200)
+    prompt_version: int | None = Field(default=None, ge=1, le=2_147_483_647)
     evaluate: bool = True
 
 
@@ -109,7 +112,7 @@ class RoutingDecisionOut(BaseModel):
     created_at: datetime
 
 
-class TraceFeedbackIn(BaseModel):
+class TraceFeedbackIn(NulStrippingModel):
     rating: Literal["up", "down"]
     note: str | None = None
 
@@ -122,7 +125,7 @@ class TraceFeedbackOut(BaseModel):
     created_at: datetime
 
 
-class TraceTagsIn(BaseModel):
+class TraceTagsIn(NulStrippingModel):
     tags: list[Annotated[str, StringConstraints(max_length=50)]] = Field(
         default_factory=list, max_length=20
     )
@@ -133,12 +136,15 @@ class TraceTagsOut(BaseModel):
     tags: list[str]
 
 
-class TraceReplayIn(BaseModel):
+class TraceReplayIn(NulStrippingModel):
     model: str | None = Field(
         default=None, description="Force this model instead of letting the router pick one"
     )
     prompt_version: int | None = Field(
-        default=None, description="Override the original trace's prompt_version, same prompt_id"
+        default=None,
+        ge=1,
+        le=2_147_483_647,
+        description="Override the original trace's prompt_version, same prompt_id",
     )
     use_cache: bool = False
 

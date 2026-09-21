@@ -51,8 +51,8 @@ async def create_dataset(
 
 @router.post("/import", response_model=DatasetOut, status_code=status.HTTP_201_CREATED)
 async def import_dataset(
-    name: str = Form(...),
-    version: str = Form(...),
+    name: str = Form(..., min_length=1, max_length=200),
+    version: str = Form(..., min_length=1, max_length=50),
     description: str | None = Form(default=None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
@@ -63,11 +63,12 @@ async def import_dataset(
     importing an existing benchmark set instead of hand-typing it.
     """
     require_unscoped(api_key)
-    raw = await file.read()
+    # One byte past the limit is enough to know it's over; never load more.
+    raw = await file.read(_MAX_IMPORT_BYTES + 1)
     if len(raw) > _MAX_IMPORT_BYTES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "file exceeds the 5MB import limit")
     try:
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8").replace("\x00", "")
     except UnicodeDecodeError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"file is not valid UTF-8: {exc}") from exc
 
@@ -95,7 +96,7 @@ async def import_dataset(
 async def list_datasets(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[DatasetOut]:
     total = (await db.execute(select(func.count()).select_from(Dataset))).scalar_one()
     rows = (
@@ -128,7 +129,7 @@ async def list_dataset_records(
     dataset_id: str,
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[DatasetRecordOut]:
     count_stmt = (
         select(func.count())

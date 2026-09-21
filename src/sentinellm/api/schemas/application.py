@@ -5,14 +5,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from sentinellm.api.schemas.common import NulStrippingModel
 
-class ApplicationCreate(BaseModel):
-    name: str
+
+class ApplicationCreate(NulStrippingModel):
+    name: str = Field(min_length=1, max_length=200)
     description: str | None = None
     daily_cost_budget: float | None = Field(default=None, ge=0)
 
 
-class ApplicationUpdate(BaseModel):
+class ApplicationUpdate(NulStrippingModel):
     description: str | None = None
     daily_cost_budget: float | None = Field(default=None, ge=0)
 
@@ -26,9 +28,9 @@ class ApplicationOut(BaseModel):
     created_at: datetime
 
 
-class APIKeyCreate(BaseModel):
-    application_id: str
-    name: str = "default"
+class APIKeyCreate(NulStrippingModel):
+    application_id: str = Field(max_length=36)
+    name: str = Field(default="default", min_length=1, max_length=200)
     role: Literal["read", "write", "admin"] = "write"
     scoped_to_application: bool = Field(
         default=False,

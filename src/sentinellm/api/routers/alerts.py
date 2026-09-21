@@ -50,7 +50,7 @@ async def list_alerts(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[AlertOut]:
     stmt = select(Alert)
     count_stmt = select(func.count()).select_from(Alert)
@@ -79,7 +79,7 @@ async def list_regressions(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=25, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[RegressionOut]:
     stmt = select(Regression)
     count_stmt = select(func.count()).select_from(Regression)

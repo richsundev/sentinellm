@@ -42,6 +42,30 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - This changelog.
 
 ### Fixed
+- **Third bug audit** (Postgres-vs-SQLite divergences, platform edges).
+  - *Inputs SQLite accepted and Postgres rejected (each a 500 in production)*:
+    NUL characters in any text (now stripped from request bodies, LLM output
+    and imported files; a `%00` in a URL is a 400); identifiers longer than
+    their `VARCHAR(n)` column (now 422); integers beyond 32 bits, including
+    `offset` (now 422).
+  - *Non-finite numbers*: Python's JSON parser accepts `Infinity`/`NaN`; a
+    stored infinite latency poisoned the aggregates, and the 422 for it failed
+    to serialise. Rejected up front, and validation errors no longer echo the
+    offending input.
+  - *Platform*: `/ready` (checks the database) for the Kubernetes readiness
+    probe — `/health` never failed, so a pod that lost its database stayed in
+    rotation; request bodies over `SENTINEL_MAX_REQUEST_BYTES` are refused
+    before parsing, and dataset import no longer loads the whole upload before
+    checking its size; the unauthenticated mock webhook receiver is only
+    mounted in `local`/`test`; `SENTINEL_LOG_LEVEL=info` (lowercase) crashed
+    startup, and a zero worker interval was a busy loop — settings are now
+    validated.
+  - *Observability*: log lines from a generation or an evaluation now carry
+    `trace_id` (the variable was read by the formatter and never set).
+  - *Frontend*: the Datasets table shows each dataset's id (the Experiments
+    form asks for it); the dataset page says how many records exist; Traces is
+    highlighted on a trace's detail page.
+  - New tests: a hostile-input sweep over every GET endpoint.
 - **Second bug audit.** Each item reproduced with a failing test first.
   - *Model health*: a model flagged down was excluded from routing, so it
     earned no traffic and stayed down forever — it now returns to `degraded`

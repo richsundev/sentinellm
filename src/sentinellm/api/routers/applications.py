@@ -69,7 +69,7 @@ async def list_applications(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[ApplicationOut]:
     stmt = select(Application)
     count_stmt = select(func.count()).select_from(Application)
@@ -141,7 +141,7 @@ async def list_api_keys(
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(RequireRead),
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[APIKeyOut]:
     stmt = select(APIKey)
     count_stmt = select(func.count()).select_from(APIKey)

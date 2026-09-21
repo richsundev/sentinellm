@@ -59,7 +59,7 @@ async def create_model(
 async def list_models(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=2_147_483_647),
 ) -> Page[ModelOut]:
     total = (await db.execute(select(func.count()).select_from(ModelPricing))).scalar_one()
     rows = (

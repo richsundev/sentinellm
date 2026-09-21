@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     embedding_provider: Literal["mock", "sentence-transformers"] = "mock"
 
     cache_enabled: bool = True
-    cache_similarity_threshold: float = 0.95
+    cache_similarity_threshold: float = Field(default=0.95, ge=0, le=1)
     # How long a cached response may be replayed; 0 disables expiry.
     cache_ttl_seconds: int = Field(default=86400, ge=0)
 
@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     router_latency_weight: float = 0.15
     router_risk_weight: float = 0.15
 
-    regression_threshold_pct: float = 5.0
+    regression_threshold_pct: float = Field(default=5.0, ge=0)
 
     alert_webhook_url: str | None = None
     alert_webhook_format: Literal["generic", "slack"] = "generic"
@@ -56,18 +56,30 @@ class Settings(BaseSettings):
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    rate_limit_per_minute: int = 120
+    rate_limit_per_minute: int = Field(default=120, ge=1)
+    # Bodies larger than this are refused (413) before they are parsed.
+    max_request_bytes: int = Field(default=10_000_000, ge=1)
 
     # Worker process: the API's `/metrics` can't see anything recorded in the
     # worker (evaluation scores, loop health, queue depth), so the worker
     # serves its own. 0 disables it.
     worker_metrics_port: int = 9100
     # Cadence of the regression / alerting / model-health / rollout loops.
-    worker_interval_seconds: float = 60.0
+    worker_interval_seconds: float = Field(default=60.0, gt=0)
 
     demo_api_key: str = "demo-api-key"
 
     otel_exporter_otlp_endpoint: str | None = None
+
+    @field_validator("log_level")
+    @classmethod
+    def _normalise_log_level(cls, value: str) -> str:
+        level = value.strip().upper()
+        if level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+            raise ValueError(
+                f"log_level must be one of CRITICAL/ERROR/WARNING/INFO/DEBUG, got {value!r}"
+            )
+        return level
 
     @model_validator(mode="after")
     def _check_router_weights(self) -> Settings:

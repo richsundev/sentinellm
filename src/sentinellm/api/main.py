@@ -5,15 +5,22 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.api.middleware import CorrelationAndMetricsMiddleware, RateLimitMiddleware
+from sentinellm.api.deps import get_db
+from sentinellm.api.middleware import (
+    CorrelationAndMetricsMiddleware,
+    RateLimitMiddleware,
+    RequestSizeLimitMiddleware,
+)
 from sentinellm.api.routers import (
     alerts,
     applications,
@@ -60,6 +67,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(IntegrityError, _conflict_handler)
 
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RequestSizeLimitMiddleware)
     app.add_middleware(CorrelationAndMetricsMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -82,9 +90,13 @@ def create_app() -> FastAPI:
         metrics.router,
         applications.router,
         rollouts.router,
-        webhook.router,
     ):
         app.include_router(router)
+
+    # The local webhook receiver is unauthenticated and logs whatever it is
+    # sent, so it only exists where there is no real webhook to point at.
+    if settings.env in {"local", "test"}:
+        app.include_router(webhook.router)
 
     # Instrumentation adds middleware, so it has to happen here, not in `lifespan`.
     setup_tracing("sentinellm-api", settings.otel_exporter_otlp_endpoint, app)
@@ -92,6 +104,20 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["internal"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/ready", tags=["internal"])
+    async def ready(db: AsyncSession = Depends(get_db)) -> JSONResponse:
+        """Readiness: can this instance serve requests? `/health` (liveness)
+        deliberately doesn't look at the database — restarting the API doesn't
+        fix a database outage — but a load balancer should stop routing to an
+        instance that can't reach it. Redis is not required: enqueueing an
+        evaluation is best-effort."""
+        try:
+            await db.execute(text("SELECT 1"))
+        except Exception:
+            logger.warning("readiness_check_failed", exc_info=True)
+            return JSONResponse(status_code=503, content={"status": "unavailable"})
+        return JSONResponse(content={"status": "ready"})
 
     @app.get("/metrics", tags=["internal"])
     async def metrics_endpoint() -> Response:
@@ -108,7 +134,13 @@ async def _validation_error_handler(_request: Request, exc: Exception) -> JSONRe
     # turns that into a string instead of crashing json.dumps.
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"detail": jsonable_encoder(exc.errors())},
+        # The echoed `input` is dropped: it can itself be unserialisable (the
+        # NaN/Infinity that was just rejected) and needn't be reflected back.
+        content={
+            "detail": jsonable_encoder(
+                [{k: v for k, v in err.items() if k != "input"} for err in exc.errors()]
+            )
+        },
     )
 
 
