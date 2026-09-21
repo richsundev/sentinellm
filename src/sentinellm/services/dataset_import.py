@@ -29,6 +29,12 @@ class DatasetImportError(ValueError):
 _KNOWN_FIELDS = {"question", "context", "expected_answer"}
 
 
+def _text(value: Any) -> str:
+    """A field's text. JSON `null` is *no value*, not the string "None" (which
+    `str(None)` used to store as a record's retrieval context)."""
+    return "" if value is None else str(value)
+
+
 def parse_jsonl(content: str) -> list[ParsedRecord]:
     records: list[ParsedRecord] = []
     for line_number, line in enumerate(content.splitlines(), start=1):
@@ -39,15 +45,21 @@ def parse_jsonl(content: str) -> list[ParsedRecord]:
             data = json.loads(line)
         except json.JSONDecodeError as exc:
             raise DatasetImportError(f"line {line_number}: invalid JSON ({exc.msg})") from exc
-        if not isinstance(data, dict) or "question" not in data:
+        if not isinstance(data, dict) or not _text(data.get("question")).strip():
             raise DatasetImportError(f"line {line_number}: missing required 'question' field")
+        explicit_metadata = data.get("metadata")
+        if isinstance(explicit_metadata, dict) and explicit_metadata:
+            metadata = explicit_metadata
+        else:
+            # No usable `metadata` object (absent, empty, or not an object —
+            # which the API can't serialise back): keep the other extra fields.
+            metadata = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS | {"metadata"}}
         records.append(
             ParsedRecord(
-                question=str(data["question"]),
-                context=str(data.get("context", "")),
-                expected_answer=str(data.get("expected_answer", "")),
-                metadata=data.get("metadata")
-                or {k: v for k, v in data.items() if k not in _KNOWN_FIELDS},
+                question=_text(data["question"]),
+                context=_text(data.get("context")),
+                expected_answer=_text(data.get("expected_answer")),
+                metadata=metadata,
             )
         )
     return records

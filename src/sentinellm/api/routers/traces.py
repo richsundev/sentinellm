@@ -130,6 +130,14 @@ async def ingest_trace(
         select(Trace).where(Trace.trace_id == trace_id).options(*_LOAD_OPTS)
     )
     if (row := existing.scalar_one_or_none()) is not None:
+        if row.application_id != payload.application_id:
+            # Idempotent replay is for the *same* application re-sending its
+            # own trace. Returning another application's trace to whoever
+            # supplied its id would hand them its prompt and response.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"trace_id '{trace_id}' is already in use by another application",
+            )
         return TraceOut.model_validate(row)
 
     cost = payload.estimated_cost

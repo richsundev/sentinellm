@@ -18,6 +18,8 @@ natural upgrade if experiment datasets grow into the hundreds of records.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -41,6 +43,7 @@ from sentinellm.services.generation import generate
 logger = get_logger(__name__)
 
 _TEMPLATE_VARS = ("context", "question")
+_PLACEHOLDER_RE = re.compile(r"\{\{(" + "|".join(_TEMPLATE_VARS) + r")\}\}")
 
 
 class ExperimentInputError(ValueError):
@@ -54,10 +57,10 @@ def render_prompt_template(template: str, *, context: str, question: str) -> str
     (Jinja2) is the natural upgrade if templates grow beyond context/question.
     """
     values = {"context": context, "question": question}
-    rendered = template
-    for key in _TEMPLATE_VARS:
-        rendered = rendered.replace(f"{{{{{key}}}}}", values[key])
-    return rendered
+    # One pass over the *template*: substituting variable-by-variable would
+    # re-scan text already inserted, so a context containing `{{question}}`
+    # had it expanded into the question.
+    return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
 
 
 async def run_experiment(session: AsyncSession, request: ExperimentRunRequest) -> Experiment:
@@ -78,7 +81,13 @@ async def run_experiment(session: AsyncSession, request: ExperimentRunRequest) -
     if dataset is None:
         raise ExperimentInputError(f"dataset '{request.dataset_id}' not found")
 
-    records_stmt = select(DatasetRecord).where(DatasetRecord.dataset_id == request.dataset_id)
+    # Ordered, so `sample_size` picks the same records on every run — an A/B
+    # comparison of two runs is meaningless if they saw different samples.
+    records_stmt = (
+        select(DatasetRecord)
+        .where(DatasetRecord.dataset_id == request.dataset_id)
+        .order_by(DatasetRecord.id)
+    )
     if request.sample_size:
         records_stmt = records_stmt.limit(request.sample_size)
     records = (await session.execute(records_stmt)).scalars().all()
@@ -179,7 +188,10 @@ async def _aggregate_into_experiment(
         else 0.0,
         p95_latency_ms=round(p95_latency, 2),
         cost_per_request=round(sum(costs) / len(costs), 6),
-        pass_rate=round(pass_count / len(evaluations), 4) if evaluations else 0.0,
+        # Over *all* requests: one that failed outright didn't pass. (Dividing
+        # by the evaluated ones let a prompt that fails half its requests
+        # report 100%, and this number gates prompt promotion.)
+        pass_rate=round(pass_count / len(traces), 4) if traces else 0.0,
         git_commit=get_git_commit(),
         parameters={**request.parameters, "sample_size": len(traces)},
     )

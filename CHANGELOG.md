@@ -42,6 +42,48 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - This changelog.
 
 ### Fixed
+- **Project-wide bug audit.** Each item below was reproduced with a failing
+  test first.
+  - *Money and metrics*: `/metrics/cost` summed a 5,000-row sample, silently
+    under-reporting spend at volume (now SQL aggregates), and averaged quality
+    over *all* traces instead of the evaluated ones; `/metrics/overview` sampled
+    the *oldest* 5,000 traces of the window and reported the sample size as
+    `request_volume`; the HTTP middleware mislabelled unmatched routes.
+  - *LLM layer*: an unconfigured provider in a fallback chain aborted the whole
+    chain instead of falling through; attempts were misreported after a context
+    overflow; null/garbled provider JSON crashed instead of failing cleanly;
+    408/409 weren't retried; provider labels on metrics and traces were guessed
+    from the model id; the judge model ignored the configured provider.
+  - *Routing*: model stats ignored registry priors, mixed stale and fresh
+    windows, and trusted a single sample; an unroutable request was an
+    unhandled 500 (now 503).
+  - *Detection*: regressions against a zero baseline produced infinite/huge
+    deltas and duplicate rows; alert de-duplication crashed on a duplicate.
+  - *Multi-tenancy*: scoped keys could read or change other applications'
+    evaluations, routing decisions, alerts, models, prompts, datasets and
+    experiments; duplicate application/dataset/trace creates were 500s (now
+    409).
+  - *Semantic cache*: an answer was replayed for the same question over
+    *different* retrieved documents, and never expired. Entries now carry a
+    context key and honour `SENTINEL_CACHE_TTL_SECONDS` (default 24h; migration
+    `c3a91d7e4b25`); a worker loop prunes expired rows.
+  - *Prompt construction*: a request's `system_prompt` used to *replace* its
+    retrieved documents, so the model never saw the context its answer was
+    then judged against; both are now sent.
+  - *Evaluation queue*: a job popped by a worker that then died, or never
+    enqueued because Redis was down, left its trace un-evaluated forever. A new
+    `evaluation_recovery` loop repairs or re-queues them
+    (`sentinel_evaluation_recovered_total`).
+  - *Tracing*: `configure_tracing` was never called, so
+    `SENTINEL_OTEL_EXPORTER_OTLP_ENDPOINT` did nothing. The API and worker now
+    enable OpenTelemetry when it is set, with `sentinel.generate` /
+    `sentinel.evaluate` spans; unset, tracing stays off.
+  - *Frontend*: Overview filters and the environment selector were never sent
+    to the API; regression deltas were drawn as green "+" gains and read
+    `1%` as `100%`; the time-range selector appeared on pages that ignore it
+    and was missing from Cost; experiment comparison collapsed same-named
+    experiments and a bad prompt version silently ran v1; the evaluations
+    pass rate counted verdict-less metrics as failures.
 - `sentinel_evaluation_score` was recorded in the worker process but only the
   API served `/metrics`, so the metric was always empty; it is now served by
   the worker. `sentinel_queue_depth`, referenced by the Kubernetes docs, did

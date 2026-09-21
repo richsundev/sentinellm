@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,11 +25,17 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://sentinel:sentinel@localhost:5432/sentinellm"
     redis_url: str = "redis://localhost:6379/0"
 
+    # Which provider family the platform is pointed at. Model selection is
+    # per-request (`provider:model` ids), so today this chooses the default
+    # LLM-as-judge model; override that with `judge_model`.
     llm_provider: Literal["mock", "openai", "anthropic"] = "mock"
+    judge_model: str | None = None
     embedding_provider: Literal["mock", "sentence-transformers"] = "mock"
 
     cache_enabled: bool = True
     cache_similarity_threshold: float = 0.95
+    # How long a cached response may be replayed; 0 disables expiry.
+    cache_ttl_seconds: int = Field(default=86400, ge=0)
 
     pii_redaction_enabled: bool = False
 

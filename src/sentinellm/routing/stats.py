@@ -6,6 +6,7 @@ until enough samples exist to trust the observed data.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from sqlalchemy import func, select
@@ -15,6 +16,10 @@ from sentinellm.db.models import Evaluation, ModelPricing, Trace
 from sentinellm.pricing.catalog import get_profile
 
 _MIN_SAMPLES_FOR_TRUST = 5
+# Health is inferred from *recent* traffic only. A model marked down is
+# excluded from routing, so it stops earning new traces; judging it by its
+# whole history (or by a handful of samples) would exclude it permanently.
+_HEALTH_WINDOW = timedelta(hours=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +62,16 @@ class DBModelStatsProvider:
 
         pricing_row = await self._session.get(ModelPricing, model_id)
         status = pricing_row.status if pricing_row else "healthy"
+        # The registry row is the operator's own statement of a model's
+        # quality/latency (POST/PATCH /models); the static catalog is only the
+        # fallback for models nobody has registered.
+        prior_quality = pricing_row.quality_tier if pricing_row else profile.quality_tier
+        prior_latency = (
+            pricing_row.avg_latency_ms_prior if pricing_row else profile.avg_latency_ms_prior
+        )
 
         recent_traces_stmt = (
-            select(Trace.id, Trace.status, Trace.latency_ms)
+            select(Trace.id, Trace.status, Trace.latency_ms, Trace.created_at)
             .where(Trace.model == model_id)
             .order_by(Trace.created_at.desc())
             .limit(self._window)
@@ -68,7 +80,7 @@ class DBModelStatsProvider:
         sample_count = len(rows)
 
         if sample_count == 0:
-            return ModelStats(profile.quality_tier, profile.avg_latency_ms_prior, 1.0, 0, status)
+            return ModelStats(prior_quality, prior_latency, 1.0, 0, status)
 
         success_count = sum(1 for r in rows if r.status == "ok")
         reliability = success_count / sample_count
@@ -82,14 +94,18 @@ class DBModelStatsProvider:
 
         if observed_quality is not None and sample_count >= _MIN_SAMPLES_FOR_TRUST:
             trust = min(1.0, sample_count / (_MIN_SAMPLES_FOR_TRUST * 4))
-            predicted_quality = observed_quality * trust + profile.quality_tier * (1 - trust)
+            predicted_quality = observed_quality * trust + prior_quality * (1 - trust)
         else:
-            predicted_quality = profile.quality_tier
+            predicted_quality = prior_quality
 
-        if reliability < 0.5:
-            status = "down"
-        elif reliability < 0.85:
-            status = "degraded" if status == "healthy" else status
+        cutoff = datetime.now(UTC) - _HEALTH_WINDOW
+        recent = [r for r in rows if _aware(r.created_at) >= cutoff]
+        if len(recent) >= _MIN_SAMPLES_FOR_TRUST:
+            recent_reliability = sum(1 for r in recent if r.status == "ok") / len(recent)
+            if recent_reliability < 0.5:
+                status = "down"
+            elif recent_reliability < 0.85:
+                status = "degraded" if status == "healthy" else status
 
         return ModelStats(
             predicted_quality=round(min(1.0, predicted_quality), 4),
@@ -98,3 +114,8 @@ class DBModelStatsProvider:
             sample_count=sample_count,
             status=status,
         )
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes even for timezone-aware columns."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

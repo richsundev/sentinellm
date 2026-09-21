@@ -66,11 +66,16 @@ class EvaluationPipeline:
         judge_provider: LLMProvider | None = None,
         extra_evaluators: list[Evaluator] | None = None,
         run_judge: bool = True,
+        judge_model: str = "mock:sentinel-judge",
     ) -> None:
         self._embeddings = embeddings
         self._evaluators = default_deterministic_evaluators(embeddings) + (extra_evaluators or [])
         self._hallucination = HallucinationDetector(embeddings)
-        self._judge = JudgeEvaluator(judge_provider) if (run_judge and judge_provider) else None
+        self._judge = (
+            JudgeEvaluator(judge_provider, model=judge_model)
+            if (run_judge and judge_provider)
+            else None
+        )
 
     async def evaluate(self, ctx: EvaluationContext) -> EvaluationRunResult:
         metrics = [await evaluator.evaluate(ctx) for evaluator in self._evaluators]

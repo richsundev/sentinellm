@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.api.deps import RequireRead, RequireWrite, get_db
+from sentinellm.api.deps import RequireRead, RequireWrite, get_db, scope_of
 from sentinellm.api.schemas.common import Page
 from sentinellm.api.schemas.experiment import (
     ExperimentComparisonOut,
     ExperimentOut,
     ExperimentRunRequest,
 )
-from sentinellm.db.models import Experiment
+from sentinellm.db.models import APIKey, Experiment
 from sentinellm.services.experiments import (
     ExperimentInputError,
     compare_experiments,
@@ -21,20 +21,28 @@ from sentinellm.services.experiments import (
 router = APIRouter(prefix="/api/v1/experiments", tags=["experiments"])
 
 
-@router.post(
-    "/run",
-    response_model=ExperimentOut,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequireWrite)],
-)
+@router.post("/run", response_model=ExperimentOut, status_code=status.HTTP_201_CREATED)
 async def run_experiment_endpoint(
-    payload: ExperimentRunRequest, db: AsyncSession = Depends(get_db)
+    payload: ExperimentRunRequest,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> ExperimentOut:
     """Runs `model` + `prompt_id`/`prompt_version` against every record (or
     `sample_size` of them) in `dataset_id` through the real generation and
     evaluation pipelines, and stores the aggregate result. Synchronous —
     see `services/experiments.py` for why.
     """
+    scope = scope_of(api_key)
+    if scope.ids is not None:
+        # The run writes one trace per record into `application_id`, so a
+        # scoped key may only target its own — and defaults to it rather than
+        # to the shared "experiment-runner" application.
+        if "application_id" not in payload.model_fields_set:
+            payload = payload.model_copy(update={"application_id": api_key.application_id})
+        elif not scope.contains(payload.application_id):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "API key is scoped to a different application"
+            )
     try:
         experiment = await run_experiment(db, payload)
     except ExperimentInputError as exc:

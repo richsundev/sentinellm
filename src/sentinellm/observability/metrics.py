@@ -63,6 +63,11 @@ WORKER_LOOP_DURATION_SECONDS = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
 )
 QUEUE_DEPTH = Gauge("sentinel_queue_depth", "Pending jobs in the evaluation queue")
+EVALUATION_RECOVERED_TOTAL = Counter(
+    "sentinel_evaluation_recovered_total",
+    "Evaluation jobs the recovery loop rescued (non-zero means the queue lost work)",
+    ["kind"],  # completed (status repaired) | requeued (stuck evaluating) | orphaned (never queued)
+)
 
 # --- Autonomous decisions ---------------------------------------------------
 ROLLOUT_DECISIONS_TOTAL = Counter(

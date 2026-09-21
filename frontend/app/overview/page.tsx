@@ -37,14 +37,20 @@ interface ProviderReliability {
 }
 
 export default function OverviewPage() {
-  const { timeRange } = useFilters();
+  const { timeRange, environment } = useFilters();
   const [model, setModel] = useState("");
   const [provider, setProvider] = useState("");
   const [applicationId, setApplicationId] = useState("");
 
   const { data, loading, error, refetch } = useFetch(
-    () => api.getOverviewMetrics(timeRange),
-    [timeRange, model, provider, applicationId]
+    () =>
+      api.getOverviewMetrics(timeRange, {
+        model: model.trim(),
+        provider: provider.trim(),
+        application_id: applicationId.trim(),
+        environment: environment === "all" ? undefined : environment,
+      }),
+    [timeRange, model, provider, applicationId, environment]
   );
 
   const kpis: { label: string; value: string; sublabel?: string }[] = data

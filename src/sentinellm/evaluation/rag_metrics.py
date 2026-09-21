@@ -13,6 +13,12 @@ from __future__ import annotations
 import math
 
 
+def _unique(ids: list[str]) -> list[str]:
+    """Keeps each id at its first rank. A retriever returning the same document
+    twice must not be credited twice — that pushed nDCG above 1."""
+    return list(dict.fromkeys(ids))
+
+
 def recall_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> float:
     if not relevant_ids:
         return 0.0
@@ -23,7 +29,7 @@ def recall_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> flo
 def precision_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> float:
     if k == 0:
         return 0.0
-    top_k = retrieved_ids[:k]
+    top_k = _unique(retrieved_ids)[:k]
     if not top_k:
         return 0.0
     hits = sum(1 for doc_id in top_k if doc_id in relevant_ids)
@@ -31,14 +37,14 @@ def precision_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> 
 
 
 def mean_reciprocal_rank(retrieved_ids: list[str], relevant_ids: set[str]) -> float:
-    for rank, doc_id in enumerate(retrieved_ids, start=1):
+    for rank, doc_id in enumerate(_unique(retrieved_ids), start=1):
         if doc_id in relevant_ids:
             return 1.0 / rank
     return 0.0
 
 
 def ndcg_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> float:
-    top_k = retrieved_ids[:k]
+    top_k = _unique(retrieved_ids)[:k]
     dcg = sum(1.0 / math.log2(i + 2) for i, doc_id in enumerate(top_k) if doc_id in relevant_ids)
     ideal_hits = min(len(relevant_ids), k)
     idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_hits))

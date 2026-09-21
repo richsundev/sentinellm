@@ -58,9 +58,9 @@ async def test_context_overflow_does_not_retry_and_moves_to_next_model() -> None
 
     result = await client.complete_with_fallback(_request("overflow:a"), ["mock:sentinel-flash"])
 
-    assert (
-        result.attempts_log[0].attempts == 5
-    )  # exhausted the retry budget on report, but only 1 real attempt made
+    # A context overflow is terminal: exactly one call was made, and the log
+    # must say so (it used to report the whole retry budget).
+    assert result.attempts_log[0].attempts == 1
     assert result.model_used == "mock:sentinel-flash"
 
 

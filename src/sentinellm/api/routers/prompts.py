@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.api.deps import RequireRead, RequireWrite, get_db
+from sentinellm.api.deps import RequireRead, RequireWrite, get_db, require_unscoped
 from sentinellm.api.schemas.common import Page
 from sentinellm.api.schemas.prompt import (
     PromptPromoteRequest,
@@ -13,7 +13,7 @@ from sentinellm.api.schemas.prompt import (
     PromptVersionCreate,
     PromptVersionOut,
 )
-from sentinellm.db.models import PromptVersion
+from sentinellm.db.models import APIKey, PromptVersion
 from sentinellm.services.prompts import (
     PromotionGateError,
     PromptNotFoundError,
@@ -23,17 +23,15 @@ from sentinellm.services.prompts import (
 router = APIRouter(prefix="/api/v1/prompts", tags=["prompts"])
 
 
-@router.post(
-    "",
-    response_model=PromptVersionOut,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequireWrite)],
-)
+@router.post("", response_model=PromptVersionOut, status_code=status.HTTP_201_CREATED)
 async def create_prompt_version(
-    payload: PromptVersionCreate, db: AsyncSession = Depends(get_db)
+    payload: PromptVersionCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> PromptVersionOut:
     """Creates the next version for `prompt_id` (version numbers are
     monotonically assigned per prompt_id, never reused)."""
+    require_unscoped(api_key)
     latest = (
         await db.execute(
             select(func.max(PromptVersion.version)).where(
@@ -83,14 +81,15 @@ async def list_prompt_versions(
     )
 
 
-@router.patch(
-    "/{prompt_id}/versions/{version}",
-    response_model=PromptVersionOut,
-    dependencies=[Depends(RequireWrite)],
-)
+@router.patch("/{prompt_id}/versions/{version}", response_model=PromptVersionOut)
 async def update_prompt_status(
-    prompt_id: str, version: int, payload: PromptStatusUpdate, db: AsyncSession = Depends(get_db)
+    prompt_id: str,
+    version: int,
+    payload: PromptStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> PromptVersionOut:
+    require_unscoped(api_key)
     stmt = select(PromptVersion).where(
         PromptVersion.prompt_id == prompt_id, PromptVersion.version == version
     )
@@ -102,19 +101,20 @@ async def update_prompt_status(
     return PromptVersionOut.model_validate(row)
 
 
-@router.post(
-    "/{prompt_id}/versions/{version}/promote",
-    response_model=PromptPromotionOut,
-    dependencies=[Depends(RequireWrite)],
-)
+@router.post("/{prompt_id}/versions/{version}/promote", response_model=PromptPromotionOut)
 async def promote_prompt_version_endpoint(
-    prompt_id: str, version: int, payload: PromptPromoteRequest, db: AsyncSession = Depends(get_db)
+    prompt_id: str,
+    version: int,
+    payload: PromptPromoteRequest,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> PromptPromotionOut:
     """Evidence-gated promotion: requires the latest experiment run for this
     exact prompt version to have `pass_rate >= quality_pass_threshold`, and
     demotes whatever was previously `production` for this `prompt_id`. See
     `services/prompts.py` for the full rationale.
     """
+    require_unscoped(api_key)
     try:
         result = await promote_prompt_version(
             db, prompt_id, version, payload.quality_pass_threshold

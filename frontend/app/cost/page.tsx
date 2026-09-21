@@ -22,7 +22,7 @@ import { formatCost } from "@/lib/format";
 export default function CostPage() {
   const { timeRange } = useFilters();
   const { data, loading, error, refetch } = useFetch(
-    () => api.getCostSummary(timeRange === "1h" ? "7d" : timeRange),
+    () => api.getCostSummary(timeRange),
     [timeRange]
   );
 

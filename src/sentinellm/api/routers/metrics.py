@@ -10,8 +10,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from sentinellm.api.deps import RequireRead, get_db, scope_of
 from sentinellm.api.schemas.metrics import (
@@ -69,8 +70,14 @@ async def overview(
     scope = scope_of(api_key)
     if scope.ids is not None:
         stmt = stmt.where(Trace.application_id.in_(scope.ids))
-    stmt = stmt.order_by(Trace.created_at.asc()).limit(_SAMPLE_CAP)
-    traces = (await db.execute(stmt)).scalars().all()
+    # The volume is counted exactly; everything else is computed over a
+    # bounded sample of the *newest* traces (oldest-first used to drop exactly
+    # the traffic a "last 24h" view is about).
+    request_volume = (
+        await db.execute(select(func.count()).select_from(stmt.order_by(None).subquery()))
+    ).scalar_one()
+    stmt = stmt.order_by(Trace.created_at.desc()).limit(_SAMPLE_CAP)
+    traces = list(reversed((await db.execute(stmt)).scalars().all()))
 
     if not traces:
         return OverviewMetricsOut(
@@ -175,7 +182,7 @@ async def overview(
     ]
 
     return OverviewMetricsOut(
-        request_volume=len(traces),
+        request_volume=request_volume,
         error_rate=round(error_count / len(traces), 4),
         p50_latency_ms=_percentile(latencies, 0.50),
         p95_latency_ms=_percentile(latencies, 0.95),
@@ -210,7 +217,10 @@ def _compute_cost_insight(per_model: dict[str, dict[str, float]]) -> str | None:
     candidates = [(m, s) for m, s in per_model.items() if s["count"] >= 3]
     if len(candidates) < 2:
         return None
-    best_quality = max(candidates, key=lambda kv: kv[1]["quality"])
+    # On an exact quality tie the pricier model is the reference, otherwise the
+    # answer depended on row order (the cheap one could be picked as "best" and
+    # then never compared against anything cheaper than itself).
+    best_quality = max(candidates, key=lambda kv: (kv[1]["quality"], kv[1]["cost"]))
     for model, stats in sorted(candidates, key=lambda kv: kv[1]["cost"]):
         if model == best_quality[0]:
             continue
@@ -237,61 +247,75 @@ async def cost_summary(
     time_range: str = Query(default="30d", alias="range", pattern="^(1h|24h|7d|30d)$"),
 ) -> CostSummaryOut:
     since = datetime.now(UTC) - _RANGE_TO_DELTA[time_range]
-    stmt = select(Trace).where(Trace.created_at >= since)
+    conditions = [Trace.created_at >= since]
     scope = scope_of(api_key)
     if scope.ids is not None:
-        stmt = stmt.where(Trace.application_id.in_(scope.ids))
-    traces = (await db.execute(stmt.limit(_SAMPLE_CAP))).scalars().all()
+        conditions.append(Trace.application_id.in_(scope.ids))
 
-    if not traces:
+    # Aggregated in SQL: this is money, so it must be exact at any volume
+    # (summing a bounded sample of rows silently under-reported spend).
+    cost_sum = func.coalesce(func.sum(Trace.estimated_cost), 0.0)
+    total_cost = (await db.execute(select(cost_sum).where(*conditions))).scalar_one()
+
+    async def grouped(column: InstrumentedAttribute) -> list[tuple[str, float]]:
+        rows = (
+            await db.execute(
+                select(column, cost_sum)
+                .where(*conditions)
+                .group_by(column)
+                .order_by(cost_sum.desc())
+            )
+        ).all()
+        return [(key, float(cost)) for key, cost in rows]
+
+    by_model = await grouped(Trace.model)
+    by_application = await grouped(Trace.application_id)
+
+    day = func.date(Trace.created_at)
+    daily_rows = (
+        await db.execute(select(day, cost_sum).where(*conditions).group_by(day).order_by(day))
+    ).all()
+
+    if not by_model:
         return CostSummaryOut(
             total_cost=0.0, daily=[], by_model=[], by_application=[], insight_text=None
         )
 
-    total_cost = sum(t.estimated_cost for t in traces)
-    daily: dict[str, float] = {}
-    by_model: dict[str, float] = {}
-    by_application: dict[str, float] = {}
-    per_model_quality: dict[str, dict[str, float]] = {}
-
-    trace_ids = [t.id for t in traces]
-    evaluations = {
-        e.trace_id: e
-        for e in (await db.execute(select(Evaluation).where(Evaluation.trace_id.in_(trace_ids))))
-        .scalars()
-        .all()
-    }
-
-    for t in traces:
-        day = t.created_at.date().isoformat()
-        daily[day] = daily.get(day, 0.0) + t.estimated_cost
-        by_model[t.model] = by_model.get(t.model, 0.0) + t.estimated_cost
-        by_application[t.application_id] = (
-            by_application.get(t.application_id, 0.0) + t.estimated_cost
-        )
-
-        stats = per_model_quality.setdefault(t.model, {"cost": 0.0, "quality": 0.0, "count": 0.0})
-        stats["cost"] += t.estimated_cost
-        stats["count"] += 1
-        evaluation = evaluations.get(t.id)
-        if evaluation is not None:
-            stats["quality"] += evaluation.overall_quality
-
-    for stats in per_model_quality.values():
-        if stats["count"] > 0:
-            stats["cost"] = stats["cost"] / stats["count"]
-            stats["quality"] = stats["quality"] / stats["count"]
-
     return CostSummaryOut(
-        total_cost=round(total_cost, 6),
-        daily=[DailyCost(date=d, cost=round(c, 6)) for d, c in sorted(daily.items())],
-        by_model=[
-            ModelCost(model=m, cost=round(c, 6))
-            for m, c in sorted(by_model.items(), key=lambda kv: -kv[1])
-        ],
+        total_cost=round(float(total_cost), 6),
+        daily=[DailyCost(date=str(d), cost=round(float(c), 6)) for d, c in daily_rows],
+        by_model=[ModelCost(model=m, cost=round(c, 6)) for m, c in by_model],
         by_application=[
-            ApplicationCost(application_id=a, cost=round(c, 6))
-            for a, c in sorted(by_application.items(), key=lambda kv: -kv[1])
+            ApplicationCost(application_id=a, cost=round(c, 6)) for a, c in by_application
         ],
-        insight_text=_compute_cost_insight(per_model_quality),
+        insight_text=_compute_cost_insight(await _per_model_stats(db, conditions)),
     )
+
+
+async def _per_model_stats(
+    db: AsyncSession, conditions: list[ColumnElement[bool]]
+) -> dict[str, dict[str, float]]:
+    """Per model: request count, average cost, and average *evaluated* quality
+    (the outer join leaves unevaluated traces NULL, which `avg` ignores —
+    dividing the sum of evaluated scores by all traces diluted it)."""
+    rows = (
+        await db.execute(
+            select(
+                Trace.model,
+                func.count(Trace.id),
+                func.avg(Trace.estimated_cost),
+                func.avg(Evaluation.overall_quality),
+            )
+            .outerjoin(Evaluation, Evaluation.trace_id == Trace.id)
+            .where(*conditions)
+            .group_by(Trace.model)
+        )
+    ).all()
+    return {
+        model: {
+            "count": float(count),
+            "cost": float(avg_cost or 0.0),
+            "quality": float(avg_quality or 0.0),
+        }
+        for model, count, avg_cost, avg_quality in rows
+    }

@@ -16,7 +16,7 @@ class AlertRuleOut(BaseModel):
 
 
 class AlertRuleUpdate(BaseModel):
-    threshold: float | None = Field(default=None)
+    threshold: float | None = Field(default=None, ge=0)
     enabled: bool | None = Field(default=None)
 
 

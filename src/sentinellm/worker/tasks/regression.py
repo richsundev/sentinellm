@@ -21,6 +21,12 @@ logger = get_logger(__name__)
 
 _WINDOW_SIZE = 30
 _DEDUPE_WINDOW = timedelta(hours=1)
+# A metric that is *exactly* 0 in the previous window (the usual state of a
+# healthy hallucination score) has no relative change to speak of. Measure the
+# increase against this floor instead, and ignore moves smaller than it — so
+# 0 -> 0.5 is flagged, 0 -> 0.02 is noise.
+_ZERO_BASELINE_FLOOR = 0.05
+_MAX_DELTA_PCT = 1000.0
 
 
 def _severity_for(delta_pct: float) -> str:
@@ -112,25 +118,35 @@ async def detect_regressions_for_application(
 
     created: list[Regression] = []
     for metric_name, (current_avg, previous_avg) in windows.items():
-        if previous_avg == 0:
-            continue
-
         if metric_name == "hallucination_score":
-            delta_pct = ((current_avg - previous_avg) / previous_avg) * 100  # increase is bad
+            increase = current_avg - previous_avg  # an increase is bad
+            if previous_avg == 0:
+                if increase < _ZERO_BASELINE_FLOOR:
+                    continue
+                delta_pct = min(_MAX_DELTA_PCT, increase / _ZERO_BASELINE_FLOOR * 100)
+            else:
+                delta_pct = min(_MAX_DELTA_PCT, increase / previous_avg * 100)
         else:
-            delta_pct = ((previous_avg - current_avg) / previous_avg) * 100  # decrease is bad
+            if previous_avg == 0:
+                continue  # nothing to fall from
+            delta_pct = ((previous_avg - current_avg) / previous_avg) * 100  # a decrease is bad
 
         if delta_pct < settings.regression_threshold_pct:
             continue
 
+        # `.first()`, not `scalar_one_or_none()`: more than one recent row is
+        # possible (racing replicas before the loops were serialised) and
+        # "already flagged" is all this needs to know.
         recently_flagged = await session.execute(
-            select(Regression).where(
+            select(Regression.id)
+            .where(
                 Regression.application_id == application_id,
                 Regression.metric_name == metric_name,
                 Regression.detected_at >= datetime.now(UTC) - _DEDUPE_WINDOW,
             )
+            .limit(1)
         )
-        if recently_flagged.scalar_one_or_none() is not None:
+        if recently_flagged.first() is not None:
             continue
 
         current_models = _dominant([t.model for t in current])

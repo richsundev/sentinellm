@@ -53,18 +53,25 @@ class OpenAIProvider(LLMProvider):
 
         if resp.status_code == 429:
             raise ProviderError(LLMErrorKind.RATE_LIMIT, "rate limited by OpenAI", retryable=True)
-        if resp.status_code == 400 and "context_length" in resp.text:
+        if resp.status_code == 400 and (
+            "context_length" in resp.text or "maximum context length" in resp.text
+        ):
             raise ProviderError(LLMErrorKind.CONTEXT_OVERFLOW, resp.text, retryable=False)
         if resp.status_code >= 400:
-            raise ProviderError(
-                LLMErrorKind.PROVIDER_ERROR, resp.text, retryable=resp.status_code >= 500
-            )
+            # 408 (request timeout) and 409 (conflict) are transient; the rest
+            # of the 4xx range is the caller's fault and retrying can't help.
+            transient = resp.status_code >= 500 or resp.status_code in (408, 409)
+            raise ProviderError(LLMErrorKind.PROVIDER_ERROR, resp.text, retryable=transient)
 
         try:
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            usage = data.get("usage", {})
-        except (KeyError, IndexError, ValueError) as exc:
+            choice = data["choices"][0]
+            # `content` is null for refusals / tool calls; downstream
+            # evaluators assume a string.
+            content = choice["message"]["content"] or ""
+            usage = data.get("usage") or {}
+            finish_reason = choice.get("finish_reason") or "stop"
+        except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
             raise ProviderError(LLMErrorKind.MALFORMED_RESPONSE, str(exc), retryable=True) from exc
 
         return LLMResponse(
@@ -74,4 +81,5 @@ class OpenAIProvider(LLMProvider):
             input_tokens=usage.get("prompt_tokens", 0),
             output_tokens=usage.get("completion_tokens", 0),
             latency_ms=round(latency_ms, 2),
+            finish_reason=finish_reason,
         )

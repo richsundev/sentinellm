@@ -12,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import { api, ApiError } from "@/lib/api";
+import { buildComparison } from "@/lib/experiment-compare";
 import { useFetch } from "@/lib/useFetch";
 import { Panel } from "@/components/Panel";
 import { DataTable, type Column } from "@/components/DataTable";
@@ -39,17 +40,7 @@ export default function ExperimentsPage() {
     if (!data) return null;
     const chosen = data.items.filter((e) => selected.includes(e.id));
     if (chosen.length !== 2) return null;
-    const metrics: { key: keyof Experiment; label: string; pct?: boolean }[] = [
-      { key: "faithfulness", label: "Faithfulness", pct: true },
-      { key: "relevance", label: "Relevance", pct: true },
-      { key: "hallucination_rate", label: "Hallucination rate", pct: true },
-      { key: "pass_rate", label: "Pass rate", pct: true },
-    ];
-    return metrics.map((m) => ({
-      metric: m.label,
-      [chosen[0].name]: chosen[0][m.key] as number,
-      [chosen[1].name]: chosen[1][m.key] as number,
-    }));
+    return buildComparison(chosen[0], chosen[1]);
   }, [data, selected]);
 
   const chosenExperiments = data?.items.filter((e) => selected.includes(e.id)) ?? [];
@@ -184,12 +175,14 @@ export default function ExperimentsPage() {
                     <Tooltip />
                     <Legend />
                     <Bar
-                      dataKey={chosenExperiments[0]?.name}
+                      dataKey={chosenExperiments[0]?.id}
+                      name={chosenExperiments[0]?.name}
                       fill="#22d3ee"
                       radius={[2, 2, 0, 0]}
                     />
                     <Bar
-                      dataKey={chosenExperiments[1]?.name}
+                      dataKey={chosenExperiments[1]?.id}
+                      name={chosenExperiments[1]?.name}
                       fill="#a78bfa"
                       radius={[2, 2, 0, 0]}
                     />
@@ -219,6 +212,13 @@ function RunExperimentPanel({ onRun }: { onRun: () => void }) {
 
   async function handleRun() {
     if (!name.trim() || !model.trim() || !promptId.trim() || !datasetId.trim()) return;
+    // `Number(x) || 1` used to turn "abc", "" or "0" into version 1 and run
+    // the experiment against the wrong prompt without saying so.
+    const version = Number(promptVersion);
+    if (!Number.isInteger(version) || version < 1) {
+      setRunError("Prompt version must be a whole number, 1 or higher");
+      return;
+    }
     setRunning(true);
     setRunError(null);
     try {
@@ -226,7 +226,7 @@ function RunExperimentPanel({ onRun }: { onRun: () => void }) {
         name: name.trim(),
         model: model.trim(),
         prompt_id: promptId.trim(),
-        prompt_version: Number(promptVersion) || 1,
+        prompt_version: version,
         dataset_id: datasetId.trim(),
       });
       setName("");

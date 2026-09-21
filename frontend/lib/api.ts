@@ -183,8 +183,15 @@ export const api = {
     request<Paginated<Alert>>("/alerts", params),
   listRegressions: (params: { limit?: number; offset?: number } = {}) =>
     request<Paginated<Regression>>("/regressions", params),
-  getOverviewMetrics: (range: TimeRange = "24h") =>
-    request<OverviewMetrics>("/metrics/overview", { range }),
+  getOverviewMetrics: (
+    range: TimeRange = "24h",
+    filters: {
+      model?: string;
+      provider?: string;
+      application_id?: string;
+      environment?: string;
+    } = {}
+  ) => request<OverviewMetrics>("/metrics/overview", { range, ...filters }),
   getCostSummary: (range: TimeRange = "30d") =>
     request<CostSummary>("/metrics/cost", { range }),
 

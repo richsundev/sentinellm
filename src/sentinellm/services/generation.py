@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.api.schemas.generate import GenerateRequest
 from sentinellm.api.schemas.trace import RetrievedDocumentIn
-from sentinellm.caching.semantic_cache import SemanticCache
+from sentinellm.caching.semantic_cache import SemanticCache, context_key_for
 from sentinellm.core.config import get_settings
 from sentinellm.core.ids import new_request_id, new_trace_id
 from sentinellm.core.logging import get_logger
@@ -31,7 +31,7 @@ from sentinellm.core.queue import enqueue_evaluation
 from sentinellm.db.models import DatasetRecord, ModelPricing, Trace, TraceSpan
 from sentinellm.embeddings.factory import get_embedding_provider
 from sentinellm.llm.base import LLMMessage, LLMRequest
-from sentinellm.llm.factory import get_provider_for_model
+from sentinellm.llm.factory import get_provider_for_model, provider_name_for_model
 from sentinellm.llm.resilient import AllModelsFailedError, ResilientLLMClient
 from sentinellm.observability.metrics import (
     CACHE_HITS_TOTAL,
@@ -40,10 +40,11 @@ from sentinellm.observability.metrics import (
     LLM_REQUESTS_TOTAL,
     ROUTING_DECISIONS_TOTAL,
 )
+from sentinellm.observability.tracing import get_tracer
 from sentinellm.pricing.calculator import calculate_cost
 from sentinellm.retrieval.reranker import ScoreJitterReranker
 from sentinellm.retrieval.retriever import Document, EmbeddingRetriever
-from sentinellm.routing.router import ModelCandidate, Router
+from sentinellm.routing.router import ModelCandidate, NoHealthyCandidateError, Router
 from sentinellm.routing.stats import DBModelStatsProvider
 from sentinellm.services.rollouts import get_active_rollout
 
@@ -100,7 +101,30 @@ async def _retrieve_and_rerank(
     return docs, retrieval_ms, rerank_ms
 
 
+def _system_content(system_prompt: str | None, retrieved: list[RetrievedDocumentIn]) -> str:
+    """The system message: instructions and retrieved context together.
+
+    A system prompt used to *replace* the retrieved documents in the prompt, so
+    a RAG request that also set one (the usual case) was evaluated for
+    faithfulness against documents the model never saw.
+    """
+    context = "\n".join(d.content for d in retrieved)
+    if system_prompt and context:
+        return f"{system_prompt}\n\nContext:\n{context}"
+    return system_prompt or context
+
+
 async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
+    with get_tracer(__name__).start_as_current_span("sentinel.generate") as span:
+        span.set_attribute("sentinel.application_id", request.application_id)
+        trace = await _generate(session, request)
+        span.set_attribute("sentinel.model", trace.model)
+        span.set_attribute("sentinel.cache_hit", trace.cache_hit)
+        span.set_attribute("sentinel.status", trace.status)
+        return trace
+
+
+async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     settings = get_settings()
     t0 = time.perf_counter()
     spans: list[TraceSpan] = []
@@ -129,6 +153,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         mark("reranking", t_start + retrieval_ms, rerank_ms, documents_reranked=len(docs))
 
     context_text = "\n".join(d.content for d in retrieved) or (request.system_prompt or "")
+    system_content = _system_content(request.system_prompt, retrieved)
 
     routing_decision = None
     rollout = None
@@ -147,7 +172,9 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         t_routing = time.perf_counter()
         candidates = await _load_candidates(session)
         if not candidates:
-            raise ValueError("no models registered in the model pricing catalog")
+            raise NoHealthyCandidateError(
+                "no model is available to route to: none are registered, or all are flagged down"
+            )
         router = Router(
             candidates,
             DBModelStatsProvider(session),
@@ -185,8 +212,11 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     selected_model = candidate_chain[0]
 
     cache = SemanticCache(
-        get_embedding_provider(settings.embedding_provider), settings.cache_similarity_threshold
+        get_embedding_provider(settings.embedding_provider),
+        settings.cache_similarity_threshold,
+        settings.cache_ttl_seconds,
     )
+    cache_context_key = context_key_for(system_content)
     cache_hit = False
     similarity_score: float | None = None
     response_text = ""
@@ -202,6 +232,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
             application_id=request.application_id,
             model=selected_model,
             query_text=request.question,
+            context_key=cache_context_key,
         )
         mark(
             "semantic_cache_lookup",
@@ -221,10 +252,8 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         t_start = (time.perf_counter() - t0) * 1000
         t_prompt = time.perf_counter()
         messages: list[LLMMessage] = []
-        if request.system_prompt or context_text:
-            messages.append(
-                LLMMessage(role="system", content=request.system_prompt or context_text)
-            )
+        if system_content:
+            messages.append(LLMMessage(role="system", content=system_content))
         messages.append(LLMMessage(role="user", content=request.question))
         mark("prompt_construction", t_start, (time.perf_counter() - t_prompt) * 1000)
 
@@ -239,7 +268,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
             output_tokens = resilient_result.response.output_tokens
             selected_model = resilient_result.model_used
             LLM_REQUESTS_TOTAL.labels(
-                model=selected_model, provider=selected_model.split(":")[0], status="ok"
+                model=selected_model, provider=provider_name_for_model(selected_model), status="ok"
             ).inc()
             mark(
                 "llm_generation",
@@ -254,7 +283,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
                 if attempt.error_kind:
                     LLM_ERRORS_TOTAL.labels(
                         model=attempt.model,
-                        provider=attempt.model.split(":")[0],
+                        provider=provider_name_for_model(attempt.model),
                         kind=attempt.error_kind,
                     ).inc()
             mark(
@@ -272,6 +301,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
                 model=selected_model,
                 query_text=request.question,
                 response=response_text,
+                context_key=cache_context_key,
             )
 
     cost = 0.0
@@ -299,7 +329,7 @@ async def generate(session: AsyncSession, request: GenerateRequest) -> Trace:
         application_id=request.application_id,
         environment=request.environment,
         model=selected_model,
-        provider=selected_model.split(":")[0],
+        provider=provider_name_for_model(selected_model),
         prompt=request.question,
         system_prompt=request.system_prompt,
         response=response_text,

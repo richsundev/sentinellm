@@ -15,8 +15,8 @@ class RetrievedDocumentIn(BaseModel):
 
 class SpanIn(BaseModel):
     name: str
-    start_ms: float
-    duration_ms: float
+    start_ms: float = Field(ge=0)
+    duration_ms: float = Field(ge=0)
     status: str = "ok"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -31,13 +31,17 @@ class TraceCreate(BaseModel):
     prompt: str
     system_prompt: str | None = None
     response: str = ""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    latency_ms: float = 0.0
-    estimated_cost: float | None = None
+    # Counts, times, and cost feed every aggregate (totals, averages,
+    # percentiles), so a negative value is not merely odd — it subtracts.
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    latency_ms: float = Field(default=0.0, ge=0)
+    estimated_cost: float | None = Field(default=None, ge=0)
     retrieved_documents: list[RetrievedDocumentIn] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    status: str = "ok"
+    # Everything downstream compares against exactly "error"; any other
+    # spelling would be silently counted as a success.
+    status: Literal["ok", "error"] = "ok"
     error: str | None = None
     spans: list[SpanIn] = Field(default_factory=list)
     prompt_id: str | None = None

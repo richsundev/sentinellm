@@ -115,12 +115,15 @@ async def ensure_default_alert_rules(session: AsyncSession) -> list[AlertRuleCon
 async def _already_alerted(
     session: AsyncSession, rule: str, affected_service: str | None = None
 ) -> bool:
-    stmt = select(Alert).where(
+    stmt = select(Alert.id).where(
         Alert.rule == rule, Alert.timestamp >= datetime.now(UTC) - _DEDUPE_WINDOW
     )
     if affected_service is not None:
         stmt = stmt.where(Alert.affected_service == affected_service)
-    return (await session.execute(stmt)).scalar_one_or_none() is not None
+    # `.first()`: duplicates within the window are possible (they were, before
+    # the worker loops were serialised) and `scalar_one_or_none()` raises on
+    # them, which would fail the alerting pass every cycle until they aged out.
+    return (await session.execute(stmt.limit(1))).first() is not None
 
 
 async def publish_alert(alert: Alert) -> None:

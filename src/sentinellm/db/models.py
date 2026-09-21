@@ -338,6 +338,12 @@ class SemanticCacheEntry(Base, TimestampMixin):
     application_id: Mapped[str] = mapped_column(String(200), nullable=False)
     model: Mapped[str] = mapped_column(String(100), nullable=False)
     query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Fingerprint of everything besides the question that shaped the answer
+    # (system prompt + retrieved context). Entries only match a lookup with the
+    # same key, so a RAG answer is never replayed against different documents.
+    context_key: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default=""
+    )
     embedding: Mapped[list[float]] = mapped_column(JSON, nullable=False)
     response: Mapped[str] = mapped_column(Text, nullable=False)
     hit_count: Mapped[int] = mapped_column(Integer, default=0)

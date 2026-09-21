@@ -83,3 +83,31 @@ def test_parse_dataset_file_rejects_unsupported_extension() -> None:
 def test_parse_dataset_file_rejects_empty_result() -> None:
     with pytest.raises(DatasetImportError, match="no records"):
         parse_dataset_file("bench.jsonl", "\n\n")
+
+
+# --- null handling ------------------------------------------------------------
+
+
+def test_jsonl_null_context_and_answer_become_empty_not_the_string_none() -> None:
+    """`str(None)` turned a JSON null into the literal text "None", which then
+    became the record's retrieval context."""
+    records = parse_jsonl('{"question": "q", "context": null, "expected_answer": null}\n')
+    assert records[0].context == ""
+    assert records[0].expected_answer == ""
+
+
+def test_jsonl_null_question_is_rejected() -> None:
+    with pytest.raises(DatasetImportError, match="question"):
+        parse_jsonl('{"question": null}\n')
+
+
+def test_jsonl_blank_question_is_rejected() -> None:
+    with pytest.raises(DatasetImportError, match="question"):
+        parse_jsonl('{"question": "   "}\n')
+
+
+def test_jsonl_non_object_metadata_is_dropped_but_other_extras_are_kept() -> None:
+    """A string in `metadata` made the record unreadable through the API
+    (DatasetRecordOut.metadata is a dict)."""
+    records = parse_jsonl('{"question": "q", "metadata": "oops", "tag": "x"}\n')
+    assert records[0].metadata == {"tag": "x"}

@@ -72,7 +72,24 @@ class ResilientLLMClient:
         attempts_log: list[FallbackAttempt] = []
 
         for model in chain:
-            provider: LLMProvider = self._resolve(model)
+            try:
+                provider: LLMProvider = self._resolve(model)
+            except (ValueError, RuntimeError, KeyError) as exc:
+                # An unknown provider prefix, or a provider whose API key isn't
+                # configured, is a failure of *this* model — the next one in
+                # the chain may be perfectly usable. Letting it propagate used
+                # to turn `[openai:gpt-4o, mock:...]` into an unhandled 500.
+                logger.warning("llm_provider_unavailable", model=model, error=str(exc))
+                attempts_log.append(
+                    FallbackAttempt(
+                        model=model,
+                        error_kind=LLMErrorKind.PROVIDER_ERROR.value,
+                        error_message=str(exc),
+                        succeeded=False,
+                        attempts=0,
+                    )
+                )
+                continue
             model_request = LLMRequest(
                 model=model,
                 messages=request.messages,
@@ -94,7 +111,11 @@ class ResilientLLMClient:
         self, provider: LLMProvider, request: LLMRequest
     ) -> tuple[LLMResponse | None, FallbackAttempt]:
         last_error: ProviderError | None = None
-        for attempt in range(1, self._max_retries + 1):
+        attempts_made = 0
+        # Always at least one attempt: a zero budget would skip the loop and
+        # trip the assertion below.
+        for attempt in range(1, max(1, self._max_retries) + 1):
+            attempts_made = attempt
             try:
                 response = await provider.complete(request)
                 return response, FallbackAttempt(
@@ -115,7 +136,7 @@ class ResilientLLMClient:
                 )
                 if exc.kind == LLMErrorKind.CONTEXT_OVERFLOW or not exc.retryable:
                     break
-                if attempt < self._max_retries:
+                if attempt < max(1, self._max_retries):
                     await asyncio.sleep(self._backoff_delay(attempt))
 
         assert last_error is not None
@@ -124,7 +145,7 @@ class ResilientLLMClient:
             error_kind=last_error.kind.value,
             error_message=str(last_error),
             succeeded=False,
-            attempts=self._max_retries,
+            attempts=attempts_made,
         )
 
     def _backoff_delay(self, attempt: int) -> float:

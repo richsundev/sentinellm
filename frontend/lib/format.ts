@@ -18,6 +18,20 @@ export function formatPercent(n: number | null | undefined, digits = 1): string 
   return `${pct.toFixed(digits)}%`;
 }
 
+/**
+ * A value already on a 0..100 percentage scale, shown as-is with an explicit
+ * sign. Unlike `formatPercent` it never guesses the scale: `formatPercent(1)`
+ * reads 1 as the fraction 100%, which is wrong for "a 1% change".
+ */
+export function formatSignedPercentPoints(
+  n: number | null | undefined,
+  digits = 1
+): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return "—";
+  const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+  return `${sign}${Math.abs(n).toFixed(digits)}%`;
+}
+
 export function formatMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || Number.isNaN(ms)) return "—";
   if (ms < 1000) return `${formatNumber(ms)} ms`;

@@ -30,6 +30,12 @@ async def create_application(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "A scoped API key cannot create other applications"
         )
+    if (
+        await db.execute(select(Application.id).where(Application.name == payload.name).limit(1))
+    ).first() is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"application '{payload.name}' already exists"
+        )
     app_row = Application(
         name=payload.name,
         description=payload.description,
@@ -104,6 +110,10 @@ async def create_api_key(
         # point of scoping.
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "A scoped API key can only create other scoped keys"
+        )
+    if await db.get(Application, payload.application_id) is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"application '{payload.application_id}' not found"
         )
     plaintext = generate_api_key()
     row = APIKey(

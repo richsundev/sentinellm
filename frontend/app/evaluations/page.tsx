@@ -28,6 +28,9 @@ export default function EvaluationsPage() {
     const byMetric = new Map<string, { pass: number; total: number }>();
     for (const ev of data.items) {
       for (const m of ev.metrics) {
+        // A metric with no threshold has no verdict; counting it as a failure
+        // dragged the pass rate down.
+        if (m.passed === null || m.passed === undefined) continue;
         const bucket = byMetric.get(m.metric_name) ?? { pass: 0, total: 0 };
         bucket.total += 1;
         if (m.passed) bucket.pass += 1;
@@ -94,7 +97,14 @@ export default function EvaluationsPage() {
       {error && <ErrorState message={error} onRetry={refetch} />}
 
       {!error && (
-        <Panel title="Pass rate by metric">
+        <Panel
+          title="Pass rate by metric"
+          action={
+            <span className="text-[10px] text-base-500">
+              evaluations on this page only
+            </span>
+          }
+        >
           {loading || !data ? (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {Array.from({ length: 4 }).map((_, i) => (

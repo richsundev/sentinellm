@@ -17,11 +17,22 @@ from sentinellm.core.logging import get_logger
 from sentinellm.db.models import Trace
 from sentinellm.evaluation.pipeline import EvaluationPipeline
 from sentinellm.observability.metrics import EVALUATION_SCORE
+from sentinellm.observability.tracing import get_tracer
 
 logger = get_logger(__name__)
 
 
 async def process_evaluation_job(
+    session: AsyncSession, pipeline: EvaluationPipeline, trace_db_id: str
+) -> bool:
+    with get_tracer(__name__).start_as_current_span("sentinel.evaluate") as span:
+        span.set_attribute("sentinel.trace_db_id", trace_db_id)
+        processed = await _process_evaluation_job(session, pipeline, trace_db_id)
+        span.set_attribute("sentinel.evaluated", processed)
+        return processed
+
+
+async def _process_evaluation_job(
     session: AsyncSession, pipeline: EvaluationPipeline, trace_db_id: str
 ) -> bool:
     claim: CursorResult = await session.execute(  # type: ignore[assignment]

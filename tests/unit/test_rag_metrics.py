@@ -1,3 +1,5 @@
+import pytest
+
 from sentinellm.evaluation.rag_metrics import (
     context_coverage,
     mean_reciprocal_rank,
@@ -37,3 +39,14 @@ def test_context_coverage_reflects_lexical_overlap() -> None:
         "our refunds are processed within five business days of return",
     )
     assert covered > uncovered
+
+
+def test_ndcg_is_never_above_one_when_a_document_id_repeats() -> None:
+    """A repeated id was credited as a hit each time it appeared, so dcg could
+    exceed the ideal dcg and the 'normalized' score exceeded 1."""
+    assert ndcg_at_k(["a", "a", "a"], {"a"}, 3) == pytest.approx(1.0)
+
+
+def test_repeated_ids_do_not_inflate_precision_or_mrr() -> None:
+    assert precision_at_k(["a", "a", "b"], {"a"}, 3) <= 1.0
+    assert mean_reciprocal_rank(["x", "a", "a"], {"a"}) == pytest.approx(0.5)

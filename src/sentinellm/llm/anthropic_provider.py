@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 import httpx
@@ -15,6 +16,10 @@ from sentinellm.llm.base import (
 )
 
 _ANTHROPIC_VERSION = "2023-06-01"
+# Anthropic reports an over-long prompt as `prompt is too long: N tokens > M
+# maximum`. (The old check matched any 400 mentioning `max_tokens`, which
+# also caught plain request-configuration errors.)
+_CONTEXT_OVERFLOW_RE = re.compile(r"prompt is too long|context (window|length)", re.IGNORECASE)
 
 
 class AnthropicProvider(LLMProvider):
@@ -65,18 +70,18 @@ class AnthropicProvider(LLMProvider):
             raise ProviderError(
                 LLMErrorKind.RATE_LIMIT, "rate limited by Anthropic", retryable=True
             )
-        if resp.status_code == 400 and "max_tokens" in resp.text:
+        if resp.status_code == 400 and _CONTEXT_OVERFLOW_RE.search(resp.text):
             raise ProviderError(LLMErrorKind.CONTEXT_OVERFLOW, resp.text, retryable=False)
         if resp.status_code >= 400:
-            raise ProviderError(
-                LLMErrorKind.PROVIDER_ERROR, resp.text, retryable=resp.status_code >= 500
-            )
+            transient = resp.status_code >= 500 or resp.status_code in (408, 409)
+            raise ProviderError(LLMErrorKind.PROVIDER_ERROR, resp.text, retryable=transient)
 
         try:
             data = resp.json()
-            content = "".join(block.get("text", "") for block in data.get("content", []))
-            usage = data.get("usage", {})
-        except (KeyError, ValueError) as exc:
+            blocks = data.get("content") or []
+            content = "".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+            usage = data.get("usage") or {}
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
             raise ProviderError(LLMErrorKind.MALFORMED_RESPONSE, str(exc), retryable=True) from exc
 
         return LLMResponse(

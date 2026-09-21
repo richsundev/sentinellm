@@ -5,6 +5,7 @@ concrete provider classes and API keys.
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 
 from sentinellm.llm.base import LLMProvider
@@ -32,7 +33,25 @@ def get_provider(name: str) -> LLMProvider:
     raise ValueError(f"Unknown LLM provider: {name}")
 
 
+_BARE_OPENAI_RE = re.compile(r"^(gpt-|chatgpt-|o[134](-|$))", re.IGNORECASE)
+_BARE_ANTHROPIC_RE = re.compile(r"^claude-", re.IGNORECASE)
+
+
+def provider_name_for_model(model_id: str) -> str:
+    """The provider a model id belongs to: the `provider:` prefix if present,
+    else inferred from the well-known bare names (`gpt-4o`, `claude-...`) the
+    providers' own `supports_model` accepts. Anything else is the mock
+    provider — which used to be the answer for *every* bare id, so
+    `gpt-4o-mini` silently returned fabricated mock answers."""
+    if ":" in model_id:
+        return model_id.split(":", 1)[0]
+    if _BARE_OPENAI_RE.match(model_id):
+        return "openai"
+    if _BARE_ANTHROPIC_RE.match(model_id):
+        return "anthropic"
+    return "mock"
+
+
 def get_provider_for_model(model_id: str) -> LLMProvider:
     """Resolve a provider from a `provider:model` id, e.g. `mock:sentinel-pro`."""
-    provider_name = model_id.split(":", 1)[0] if ":" in model_id else "mock"
-    return get_provider(provider_name)
+    return get_provider(provider_name_for_model(model_id))

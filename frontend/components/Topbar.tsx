@@ -4,13 +4,15 @@ import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { ENVIRONMENTS, TIME_RANGES, useFilters } from "@/lib/filters-context";
 
-const TIME_RANGE_ROUTES = new Set(["/overview", "/traces", "/evaluations"]);
+// Only the pages whose data actually follows the selected range.
+const TIME_RANGE_ROUTES = new Set(["/overview", "/cost"]);
 
 const TITLES: Record<string, string> = {
   "/overview": "Overview",
   "/traces": "Traces",
   "/evaluations": "Evaluations",
   "/regressions": "Regressions",
+  "/rollouts": "Rollouts",
   "/routing": "Routing decisions",
   "/models": "Model registry",
   "/experiments": "Experiments",

@@ -225,9 +225,12 @@ docker compose --profile monitoring up --scale worker=2   # two replicas: watch 
 ```
 
 No OpenAI/Anthropic API key is needed for any of this. To use a real
-provider instead, set `SENTINEL_LLM_PROVIDER=openai` (or `anthropic`) and
-the corresponding `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` in `.env` (copy
-`.env.example` first).
+provider, put its key in `.env` (copy `.env.example` first), register a
+model under a provider-prefixed id (`POST /api/v1/models` with e.g.
+`openai:gpt-4o-mini`) and pass it as `preferred_model` (or let the router
+pick it once registered). Model selection is per request, by that prefix;
+`SENTINEL_LLM_PROVIDER=openai` (or `anthropic`) additionally switches the
+LLM-as-judge to a real model (override with `SENTINEL_JUDGE_MODEL`).
 
 ## Local development
 

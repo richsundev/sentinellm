@@ -4,10 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinellm.api.deps import RequireRead, RequireWrite, get_db
+from sentinellm.api.deps import RequireRead, RequireWrite, get_db, require_unscoped
 from sentinellm.api.schemas.common import Page
 from sentinellm.api.schemas.model import ModelCreate, ModelOut, ModelUpdate
-from sentinellm.db.models import ModelPricing
+from sentinellm.db.models import APIKey, ModelPricing
 from sentinellm.routing.stats import DBModelStatsProvider
 
 router = APIRouter(prefix="/api/v1/models", tags=["models"])
@@ -30,13 +30,13 @@ async def _to_out(db: AsyncSession, row: ModelPricing) -> ModelOut:
     )
 
 
-@router.post(
-    "",
-    response_model=ModelOut,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RequireWrite)],
-)
-async def create_model(payload: ModelCreate, db: AsyncSession = Depends(get_db)) -> ModelOut:
+@router.post("", response_model=ModelOut, status_code=status.HTTP_201_CREATED)
+async def create_model(
+    payload: ModelCreate,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
+) -> ModelOut:
+    require_unscoped(api_key)
     if await db.get(ModelPricing, payload.id) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, f"model '{payload.id}' already exists")
     row = ModelPricing(
@@ -75,10 +75,14 @@ async def list_models(
     return Page(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.patch("/{model_id}", response_model=ModelOut, dependencies=[Depends(RequireWrite)])
+@router.patch("/{model_id}", response_model=ModelOut)
 async def update_model(
-    model_id: str, payload: ModelUpdate, db: AsyncSession = Depends(get_db)
+    model_id: str,
+    payload: ModelUpdate,
+    db: AsyncSession = Depends(get_db),
+    api_key: APIKey = Depends(RequireWrite),
 ) -> ModelOut:
+    require_unscoped(api_key)
     row = await db.get(ModelPricing, model_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"model '{model_id}' not found")

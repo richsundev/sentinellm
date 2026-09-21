@@ -77,3 +77,16 @@ def require_role(required: str):
 RequireRead = require_role("read")
 RequireWrite = require_role("write")
 RequireAdmin = require_role("admin")
+
+
+def require_unscoped(api_key: APIKey) -> None:
+    """Guards operations on *shared* platform configuration — the model
+    registry, alert thresholds, the prompt registry, datasets. None of these
+    belong to a tenant, so a key confined to one application must not change
+    them: flipping a model to `down` reroutes every tenant's traffic."""
+    if scope_of(api_key).ids is not None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "This changes configuration shared by every application; it requires an API key "
+            "that is not scoped to a single application",
+        )

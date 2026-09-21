@@ -8,9 +8,19 @@ import { DataTable, Pagination, type Column } from "@/components/DataTable";
 import { ErrorState, SkeletonTable } from "@/components/StateViews";
 import { StatusBadge } from "@/components/StatusBadge";
 import type { Regression, Severity } from "@/lib/types";
-import { formatDate, formatPercent } from "@/lib/format";
+import { formatDate, formatSignedPercentPoints } from "@/lib/format";
 
 const LIMIT = 25;
+
+/**
+ * `delta_pct` is the *size* of the degradation (always positive, on a 0..100
+ * scale) — it says nothing about direction, and latency/hallucination
+ * regressions go *up*. The direction is the actual movement of the metric.
+ */
+function signedChange(r: Regression): number {
+  const direction = Math.sign(r.new_value - r.previous_value) || -1;
+  return direction * Math.abs(r.delta_pct);
+}
 const SEVERITY_RANK: Record<Severity, number> = {
   critical: 3,
   high: 2,
@@ -70,10 +80,7 @@ export default function RegressionsPage() {
       header: "Delta",
       align: "right",
       render: (r) => (
-        <span className={r.delta_pct < 0 ? "text-err" : "text-ok"}>
-          {r.delta_pct > 0 ? "+" : ""}
-          {formatPercent(r.delta_pct)}
-        </span>
+        <span className="text-err">{formatSignedPercentPoints(signedChange(r))}</span>
       ),
       sortValue: (r) => r.delta_pct,
     },
@@ -109,9 +116,8 @@ export default function RegressionsPage() {
             <span className="text-xs text-base-400">on {spotlight.application_id}</span>
             <span className="font-mono text-sm">
               {spotlight.previous_value.toFixed(3)} → {spotlight.new_value.toFixed(3)}{" "}
-              <span className={spotlight.delta_pct < 0 ? "text-err" : "text-ok"}>
-                ({spotlight.delta_pct > 0 ? "+" : ""}
-                {formatPercent(spotlight.delta_pct)})
+              <span className="text-err">
+                ({formatSignedPercentPoints(signedChange(spotlight))})
               </span>
             </span>
             <span className="text-xs text-base-500">

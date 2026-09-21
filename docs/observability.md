@@ -89,10 +89,13 @@ addition to the normal stack. Everything is provisioned from files:
 ## Distributed tracing
 
 [`observability/tracing.py`](../src/sentinellm/observability/tracing.py)
-configures an OpenTelemetry `TracerProvider`. Locally it exports spans to
-the console (zero setup); set `SENTINEL_OTEL_EXPORTER_OTLP_ENDPOINT` to
-export to any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, a
-vendor APM) with no code change.
+configures an OpenTelemetry `TracerProvider`. Tracing is **off unless
+`SENTINEL_OTEL_EXPORTER_OTLP_ENDPOINT` is set**; then the API and the worker
+export to that OTLP collector (Jaeger, Tempo, Honeycomb, a vendor APM) with
+no code change. The API is auto-instrumented (one span per HTTP request), and
+`sentinel.generate` and `sentinel.evaluate` spans wrap the generation and
+evaluation-job paths. Unset, the tracer is a no-op: nothing is exported or
+printed, and the spans in the code cost nothing.
 
 This is a different (and complementary) tracing concept from the
 application-level `TraceSpan` rows stored per LLM trace (retrieval →

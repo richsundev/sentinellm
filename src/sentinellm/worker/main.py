@@ -1,7 +1,8 @@
 """Worker process entrypoint: runs concurrent async loops — evaluation job
-consumption, four periodic passes (regression detection, alert-rule
-evaluation, model-health monitoring, canary-rollout evaluation), and a
-queue-depth sampler for `/metrics` — all inside a single process. See
+consumption, six periodic passes (regression detection, alert-rule
+evaluation, model-health monitoring, canary-rollout evaluation, lost-job
+recovery, cache expiry), and a queue-depth sampler for `/metrics` — all inside a single
+process. See
 docs/design-decisions.md for why this isn't a fleet of separate Celery
 workers.
 
@@ -24,10 +25,13 @@ from sentinellm.core.logging import configure_logging, get_logger
 from sentinellm.core.queue import dequeue_evaluation, queue_depth
 from sentinellm.db.session import get_sessionmaker
 from sentinellm.observability.metrics import QUEUE_DEPTH
+from sentinellm.observability.tracing import setup_tracing
 from sentinellm.services.evaluation_factory import get_evaluation_pipeline
 from sentinellm.worker.periodic import run_periodic
 from sentinellm.worker.tasks.alerting import evaluate_alert_rules
+from sentinellm.worker.tasks.cache_prune import prune_semantic_cache
 from sentinellm.worker.tasks.evaluate import process_evaluation_job
+from sentinellm.worker.tasks.evaluation_recovery import recover_evaluations
 from sentinellm.worker.tasks.model_health import evaluate_model_health
 from sentinellm.worker.tasks.regression import detect_regressions
 from sentinellm.worker.tasks.rollout import evaluate_rollouts
@@ -65,6 +69,7 @@ async def run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)
     logger.info("sentinellm_worker_starting", env=settings.env)
+    setup_tracing("sentinellm-worker", settings.otel_exporter_otlp_endpoint)
 
     if settings.worker_metrics_port:
         start_http_server(settings.worker_metrics_port)
@@ -85,6 +90,12 @@ async def run() -> None:
             "model_health", evaluate_model_health, interval_s=interval, stop_event=stop_event
         ),
         run_periodic("rollout", evaluate_rollouts, interval_s=interval, stop_event=stop_event),
+        run_periodic(
+            "cache_prune", prune_semantic_cache, interval_s=interval, stop_event=stop_event
+        ),
+        run_periodic(
+            "evaluation_recovery", recover_evaluations, interval_s=interval, stop_event=stop_event
+        ),
         # Every replica reports the same shared queue, so this needs no lock.
         run_periodic(
             "queue_depth",
