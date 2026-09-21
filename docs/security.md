@@ -13,6 +13,21 @@ brute-force-by-guessing risk a slow adaptive hash defends against, and a
 fast hash is what lets every authenticated request do a single indexed
 lookup instead of an expensive KDF on every call.
 
+### Key lifecycle
+
+A key can be issued with a lifetime (`expires_in_days`), after which it stops
+authenticating (401, "API key has expired"). `POST
+/api/v1/applications/api-keys/{id}/revoke` disables one permanently and at once
+(idempotent); `POST .../rotate` issues a replacement with the same application,
+role and scope and retires the old key — immediately, or after `grace_minutes`
+(implemented as an expiry on the old key) so clients have time to switch. Both
+are admin-only, and a scoped admin can only manage its own application's keys
+(other ids answer 404, not 403, so they can't be probed). A key can't revoke
+itself — that is almost always a lockout; rotating itself is fine. Revocations
+and rotations are logged (`api_key_revoked`, `api_key_rotated`) with the acting
+key. `last_used_at` is refreshed at most once a minute per key, so
+authentication doesn't write on every request.
+
 Every route except `/health`, `/ready` and the mock webhook receiver (mounted
 only when `SENTINEL_ENV` is `local` or `test`) requires
 `X-API-Key`; a missing or unrecognized key returns 401

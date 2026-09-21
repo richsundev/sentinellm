@@ -12,6 +12,8 @@ real code paths — nothing here is a synthetic/invented number:
   3. Router decision latency
   4. Semantic cache lookup latency (against a pre-populated cache)
   5. Database query latency (a realistic filtered trace list query)
+  6. Dataset retrieval (`/generate` with `dataset_id`: top-3 over a 200-record
+     dataset, the way the request path does it)
 
 Run with: python scripts/run_benchmarks.py [--iterations N]
 
@@ -183,6 +185,38 @@ async def bench_semantic_cache_lookup(
     return _summarize("semantic_cache_lookup (scan of 200 candidate entries)", durations)
 
 
+async def bench_dataset_retrieval(
+    session: AsyncSession, iterations: int, warmup: int
+) -> BenchmarkResult:
+    from sentinellm.db.models import Dataset, DatasetRecord
+    from sentinellm.services.generation import _retrieve_and_rerank
+
+    dataset = Dataset(name="bench-corpus", version="v1")
+    dataset.records = [
+        DatasetRecord(
+            question=f"question {i}",
+            context=(
+                f"Policy {i}: customers on plan {i % 7} may request a refund within "
+                f"{10 + i % 30} days of purchase; contact support tier {i % 5} for exceptions."
+            ),
+            expected_answer=f"answer {i}",
+        )
+        for i in range(200)
+    ]
+    session.add(dataset)
+    await session.commit()
+
+    questions = [f"What is the refund window for plan {i % 7}?" for i in range(iterations + warmup)]
+    for q in questions[:warmup]:
+        await _retrieve_and_rerank(session, dataset.id, q, 3)
+    durations: list[float] = []
+    for q in questions[warmup:]:
+        t0 = time.perf_counter()
+        await _retrieve_and_rerank(session, dataset.id, q, 3)
+        durations.append(time.perf_counter() - t0)
+    return _summarize("dataset_retrieval (top-3 over 200 records)", durations)
+
+
 async def bench_db_query(session: AsyncSession, iterations: int, warmup: int) -> BenchmarkResult:
     async def _query() -> None:
         stmt = (
@@ -229,6 +263,7 @@ async def run(iterations: int, output_path: Path | None) -> None:
         results.append(await bench_routing_decision(iterations, warmup))
         results.append(await bench_semantic_cache_lookup(session, iterations, warmup))
         results.append(await bench_db_query(session, iterations, warmup))
+        results.append(await bench_dataset_retrieval(session, iterations, warmup))
 
     await engine.dispose()
     db_path.unlink(missing_ok=True)

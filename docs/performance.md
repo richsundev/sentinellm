@@ -27,8 +27,18 @@ evaluator/router don't scale linearly) and is not claimed here.
 | Router decision (4 candidates) | ~64,956/s | 0.015ms | 0.018ms | 0.036ms |
 | Semantic cache lookup (200-entry linear scan) | ~110/s | 8.7ms | 10.5ms | 26.3ms |
 | DB query (filtered trace list, limit 25) | ~1,297/s | 0.73ms | 1.14ms | 1.85ms |
+| Dataset retrieval (`/generate` + `dataset_id`, top-3 over 200 records) | ~650–775/s | 1.3–1.5ms | 1.6–2.1ms | 1.8–2.5ms |
 
 ## Reading these numbers
+
+- **Dataset retrieval was ~9.5ms and is ~1.3ms** (measured before/after on the
+  same machine, mock embeddings). `/generate` with a `dataset_id` used to load
+  every record and re-embed the whole corpus on every request; the corpus is now
+  indexed once ([`retrieval/corpus_cache.py`](../src/sentinellm/retrieval/corpus_cache.py):
+  documents plus unit-length vectors, LRU-bounded, keyed by dataset and record
+  count) and a comparison is a dot product. With the mock's hash embeddings the
+  saving is modest; with a real embedding model it is the difference between one
+  model call per request and hundreds — that cost is now paid once per dataset.
 
 - **The router is essentially free** (microseconds) — it's pure Python
   arithmetic over a handful of candidates, no I/O. This is expected and

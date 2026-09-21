@@ -22,13 +22,14 @@ from sentinellm.core.config import get_settings
 from sentinellm.core.logging import get_logger
 from sentinellm.db.models import Alert, AlertRuleConfig, Application, Evaluation, Trace
 from sentinellm.observability.metrics import ALERTS_FIRED_TOTAL
+from sentinellm.services.budget import BUDGET_WINDOW
 
 logger = get_logger(__name__)
 
 _WINDOW = timedelta(hours=1)
 # Budgets are per *day*, so spend is measured over a day. (It used to be
 # measured over `_WINDOW`: a $50/day budget alerted only past $50 in one hour.)
-_COST_WINDOW = timedelta(hours=24)
+_COST_WINDOW = BUDGET_WINDOW  # the same day the budget is enforced over
 _DEDUPE_WINDOW = timedelta(hours=1)
 
 

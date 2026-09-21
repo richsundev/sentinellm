@@ -87,6 +87,12 @@ groups:
         annotations:
           summary: "A prompt canary was automatically rolled back in the last 15 minutes"
 
+      - alert: SentinelBudgetEnforced
+        expr: sum by (action) (increase(sentinel_budget_enforced_total[15m])) > 0
+        labels: { severity: medium }
+        annotations:
+          summary: "An application's daily budget is being enforced ({{ $labels.action }}) — requests are being downgraded or refused"
+
       - alert: SentinelModelFlaggedDown
         expr: sum by (model) (increase(sentinel_model_status_changes_total{status="down"}[15m])) > 0
         labels: { severity: high }

@@ -8,6 +8,7 @@ const application = (over: Partial<Application> = {}): Application => ({
   name: "checkout",
   description: null,
   daily_cost_budget: 5,
+  budget_action: "alert",
   created_at: "2026-09-01T00:00:00Z",
   ...over,
 });

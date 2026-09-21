@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # Cadence of the regression / alerting / model-health / rollout loops.
     worker_interval_seconds: float = Field(default=60.0, gt=0)
 
+    # How long `/generate` reuses an application's budget lookup and 24h spend
+    # (per replica). 0 = query every time. See `services.budget`.
+    budget_cache_seconds: float = Field(default=10.0, ge=0)
+
     demo_api_key: str = "demo-api-key"
 
     otel_exporter_otlp_endpoint: str | None = None

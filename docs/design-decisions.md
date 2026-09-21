@@ -389,3 +389,43 @@ trace page shows which version answered, whether it was a canary arm, and the
 text the model saw. `sentinel_prompt_rollout_decisions_total` and a
 `prompt_rollout_auto_rollback` alert make the loop visible, and it is one more
 pass in the worker (`prompt_rollout`), under the same advisory lock as the rest.
+
+## 14. Budgets are enforced at admission, approximately
+
+**Context.** `Application.daily_cost_budget` fed an alert and nothing else, so
+an application could spend straight through it and the platform would only
+*tell* someone, an hour later, on the worker's next pass. For a gateway that
+sits between an application and a metered API, "we noticed" is the weak half of
+cost control.
+
+**Decision.** A per-application `budget_action` — `alert` (unchanged default),
+`downgrade`, or `block` — is checked at the start of every `/generate` against
+the application's trailing-24h spend (the same window the alert uses, aggregated
+in SQL over the `(application_id, created_at)` index). Over budget:
+`block` refuses with 402; `downgrade` serves the cheapest healthy model
+instead of whatever the request, the router or a canary would have chosen —
+but never moves a request to a *dearer* one — and records the decision on the
+trace (`budget_downgrade`), a span, and `sentinel_budget_enforced_total`. Replay
+goes through the same path, so it isn't a way around the budget.
+
+**Alternatives.** *An exact real-time cap* (a shared atomic counter in Redis, a
+reserve-then-settle step around each call): correct to the cent, but it adds a
+hard dependency on the hot path, an accounting protocol, and failure modes
+(a crashed request that never settles) for a control whose job is "stop the
+runaway", not "invoice". *Enforcing in the worker* (flip a flag when the alert
+fires): simple, but reacts a whole loop interval late, which is exactly when a
+runaway does its damage. *Always blocking*: too blunt — for many applications a
+cheaper answer beats no answer, hence the choice of action.
+
+**Tradeoffs.** It is approximate. The spend is a database aggregate cached for
+`SENTINEL_BUDGET_CACHE_SECONDS` (default 10) per replica, and requests already
+in flight aren't counted, so an application can overshoot by what it spends in
+that gap; with N replicas that is N caches. `downgrade` trades quality for cost
+without asking, which is why it is opt-in and visible on every affected trace.
+A cache hit costs nothing but is still refused under `block` — serving cached
+answers to a blocked application is a refinement, not done yet.
+
+**Consequences.** A budget can be a real ceiling instead of a notification, with
+the failure modes named above. The check costs one cached lookup for every
+application and one cached aggregate for those that enforce; applications that
+don't set an action pay only the lookup.

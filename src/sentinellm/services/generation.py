@@ -19,7 +19,7 @@ import random
 import time
 from dataclasses import asdict
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinellm.api.schemas.common import strip_nul
@@ -31,11 +31,14 @@ from sentinellm.core.ids import new_request_id, new_trace_id
 from sentinellm.core.logging import get_logger, trace_id_var
 from sentinellm.core.queue import enqueue_evaluation
 from sentinellm.db.models import DatasetRecord, ModelPricing, Trace, TraceSpan
+from sentinellm.embeddings.base import EmbeddingProvider
 from sentinellm.embeddings.factory import get_embedding_provider
+from sentinellm.embeddings.similarity import normalized
 from sentinellm.llm.base import LLMErrorKind, LLMMessage, LLMRequest
 from sentinellm.llm.factory import get_provider_for_model, provider_name_for_model
 from sentinellm.llm.resilient import AllModelsFailedError, FallbackAttempt, ResilientLLMClient
 from sentinellm.observability.metrics import (
+    BUDGET_ENFORCED_TOTAL,
     CACHE_HITS_TOTAL,
     LLM_COST_TOTAL,
     LLM_ERRORS_TOTAL,
@@ -44,11 +47,14 @@ from sentinellm.observability.metrics import (
 )
 from sentinellm.observability.tracing import get_tracer
 from sentinellm.pricing.calculator import calculate_cost
+from sentinellm.retrieval import corpus_cache
+from sentinellm.retrieval.corpus_cache import CorpusIndex
 from sentinellm.retrieval.reranker import ScoreJitterReranker
 from sentinellm.retrieval.retriever import Document, EmbeddingRetriever
 from sentinellm.routing.router import ModelCandidate, NoHealthyCandidateError, Router
 from sentinellm.routing.stats import DBModelStatsProvider
 from sentinellm.security.pii import redact_documents, redact_pii
+from sentinellm.services.budget import BudgetExceededError, enforced_budget
 from sentinellm.services.prompt_rollouts import choose_arm, get_latest_prompt_rollout
 from sentinellm.services.prompts import render_template, resolve_prompt_version
 from sentinellm.services.rollouts import get_active_rollout
@@ -72,27 +78,54 @@ async def _load_candidates(session: AsyncSession) -> list[ModelCandidate]:
     ]
 
 
-async def _retrieve_and_rerank(
-    session: AsyncSession, dataset_id: str, question: str, top_k: int
-) -> tuple[list[RetrievedDocumentIn], float, float]:
+async def _corpus_index(
+    session: AsyncSession, dataset_id: str, embeddings: EmbeddingProvider
+) -> CorpusIndex:
+    """The dataset's documents and their embeddings, built once and reused (see
+    `retrieval.corpus_cache`). The record count in the key is one cheap query
+    that keeps a dataset which gained records from being served stale."""
+    count = (
+        await session.execute(
+            select(func.count())
+            .select_from(DatasetRecord)
+            .where(DatasetRecord.dataset_id == dataset_id)
+        )
+    ).scalar_one()
+    key = (dataset_id, embeddings.name, count)
+    if (cached := corpus_cache.get(key)) is not None:
+        return cached
+
     rows = (
         (await session.execute(select(DatasetRecord).where(DatasetRecord.dataset_id == dataset_id)))
         .scalars()
         .all()
     )
-    corpus = [
+    documents = tuple(
         Document(doc_id=r.id, content=(r.context or r.expected_answer))
         for r in rows
         if (r.context or r.expected_answer)
-    ]
-    if not corpus:
-        return [], 0.0, 0.0
+    )
+    vectors = tuple(
+        normalized(v) for v in await embeddings.embed_batch([d.content for d in documents])
+    )
+    index = CorpusIndex(documents, vectors)
+    corpus_cache.put(key, index)
+    return index
 
+
+async def _retrieve_and_rerank(
+    session: AsyncSession, dataset_id: str, question: str, top_k: int
+) -> tuple[list[RetrievedDocumentIn], float, float]:
     settings = get_settings()
     embeddings = get_embedding_provider(settings.embedding_provider)
+    index = await _corpus_index(session, dataset_id, embeddings)
+    if not index.documents:
+        return [], 0.0, 0.0
 
     t_retrieval = time.perf_counter()
-    retrieved = await EmbeddingRetriever(embeddings, corpus).retrieve(question, top_k=top_k)
+    retrieved = await EmbeddingRetriever(
+        embeddings, index.documents, vectors=index.vectors, unit_vectors=True
+    ).retrieve(question, top_k=top_k)
     retrieval_ms = (time.perf_counter() - t_retrieval) * 1000
 
     t_rerank = time.perf_counter()
@@ -119,6 +152,10 @@ def _failed_attempts(
         and a.model != exclude
         and a.error_kind != LLMErrorKind.CONTEXT_OVERFLOW.value
     ]
+
+
+def _blended_price(candidate: ModelCandidate) -> float:
+    return (candidate.input_price_per_1k + candidate.output_price_per_1k) / 2
 
 
 def _system_content(system_prompt: str | None, retrieved: list[RetrievedDocumentIn]) -> str:
@@ -165,6 +202,16 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
                 span_metadata=meta,
             )
         )
+
+    # Admission: an application that has spent its daily budget and asked for it
+    # to be enforced is stopped (or made cheaper) before anything else costs money.
+    t_budget = time.perf_counter()
+    budget = await enforced_budget(session, request.application_id)
+    downgrade = budget is not None and budget.exceeded
+    if budget is not None and downgrade and budget.action == "block":
+        BUDGET_ENFORCED_TOTAL.labels(action="block").inc()
+        raise BudgetExceededError(budget.application_name, budget.budget or 0.0, budget.spent)
+    budget_ms = (time.perf_counter() - t_budget) * 1000
 
     retrieved: list[RetrievedDocumentIn] = list(request.retrieved_documents or [])
     if not retrieved and request.dataset_id:
@@ -230,10 +277,32 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     routing_decision = None
     rollout = None
     rollout_arm: str | None = None
-    if not request.preferred_model:
+    downgrade_to: str | None = None
+    if downgrade and budget is not None:
+        candidates = await _load_candidates(session)
+        if candidates:
+            cheapest = min(candidates, key=_blended_price)
+            pinned = next((c for c in candidates if c.model_id == request.preferred_model), None)
+            # Never move a request to a *dearer* model: one already pinned to the
+            # cheapest (or cheaper than it) stays as it is.
+            if pinned is None or _blended_price(cheapest) < _blended_price(pinned):
+                downgrade_to = cheapest.model_id
+                BUDGET_ENFORCED_TOTAL.labels(action="downgrade").inc()
+                mark(
+                    "budget_guard",
+                    0.0,
+                    budget_ms,
+                    action="downgrade",
+                    budget=budget.budget,
+                    spent=round(budget.spent, 6),
+                    model=downgrade_to,
+                )
+    if downgrade_to is None and not request.preferred_model:
         rollout = await get_active_rollout(session, request.application_id)
 
-    if rollout is not None:
+    if downgrade_to is not None:
+        candidate_chain = [downgrade_to]
+    elif rollout is not None:
         is_challenger = random.random() < (rollout.traffic_pct / 100.0)
         rollout_arm = "challenger" if is_challenger else "incumbent"
         candidate_chain = [rollout.challenger_model if is_challenger else rollout.incumbent_model]
@@ -418,6 +487,12 @@ async def _generate(session: AsyncSession, request: GenerateRequest) -> Trace:
     if rollout is not None:
         trace_metadata["rollout_id"] = rollout.id
         trace_metadata["rollout_arm"] = rollout_arm
+    if downgrade_to is not None and budget is not None:
+        trace_metadata["budget_downgrade"] = {
+            "to": downgrade_to,
+            "budget": budget.budget,
+            "spent": round(budget.spent, 6),
+        }
     if prompt_rollout is not None:
         trace_metadata["prompt_rollout_id"] = prompt_rollout.id
         trace_metadata["prompt_rollout_arm"] = prompt_arm

@@ -172,6 +172,8 @@ see [Design decisions](#design-decisions--tradeoffs) for why):
 | Automated regression detection | ✅ | Windowed comparison + likely-cause diffing |
 | Semantic response cache, with hit-rate/savings observability | ✅ | Cosine similarity over a shared embedding abstraction; hit rate and estimated $ saved surfaced on the Overview page |
 | Cost tracking, per-application budgets + "cheaper model" insight | ✅ | Per-app `daily_cost_budget` with automatic overage alerts, computed live from stored traces, never hardcoded |
+| **Budget enforcement** | ✅ | `budget_action` per application: `alert` (default), `downgrade` (once the trailing-24h spend passes the budget, `/generate` serves the cheapest healthy model — never a dearer one — and records why on the trace) or `block` (402). Checked at admission, cached briefly per replica, so approximate by design ([decision 14](docs/design-decisions.md#14-budgets-are-enforced-at-admission-approximately)); `GET /applications/{id}/budget` reports live spend |
+| **API key lifecycle** | ✅ | Keys can be issued with a lifetime, revoked, and rotated (`POST /applications/api-keys/{id}/revoke` / `/rotate`, with an optional grace period for the old key); `last_used_at` is recorded at most once a minute per key |
 | Alerting with configurable thresholds, Slack-or-generic webhook delivery + dedup | ✅ | Thresholds live in the `alert_rules` table, editable from Settings / `PATCH /alerts/rules/{rule}`; `SENTINEL_ALERT_WEBHOOK_FORMAT=slack` posts directly to a Slack Incoming Webhook |
 | API-key auth with RBAC (read/write/admin) + per-key tenant scoping | ✅ | SHA-256-hashed keys, shown once at creation; a key can optionally be scoped to a single application, restricting its visibility/writes everywhere (traces, metrics, rollouts, applications) |
 | Rate limiting | ✅ | Per-key moving-window limiter |
@@ -406,7 +408,8 @@ Details: **[docs/observability.md](docs/observability.md)**.
 ## Security
 
 - API keys are SHA-256-hashed (never stored in plaintext), shown once at
-  creation, scoped to read/write/admin roles.
+  creation, scoped to read/write/admin roles, and can expire, be revoked, and
+  be rotated with a grace period.
 - Per-key (falling back to per-IP) rate limiting.
 - Request validation via Pydantic at every boundary.
 - No secrets in the repository — `.env.example` documents every variable;

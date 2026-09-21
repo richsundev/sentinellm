@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
@@ -14,6 +15,13 @@ from sentinellm.api.security import hash_api_key, role_satisfies
 from sentinellm.db.base import utcnow
 from sentinellm.db.models import APIKey
 from sentinellm.db.session import get_session
+
+_LAST_USED_INTERVAL = timedelta(minutes=1)
+
+
+def _aware(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes even for timezone-aware columns."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
@@ -37,8 +45,16 @@ async def get_current_api_key(
     if api_key is None or api_key.revoked:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or revoked API key")
 
-    api_key.last_used_at = utcnow()
-    await db.flush()
+    now = utcnow()
+    if api_key.expires_at is not None and _aware(api_key.expires_at) <= now:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key has expired")
+
+    # Recorded, but not on every request: an UPDATE + flush per authenticated
+    # call is a write on the hottest read path, for a value nobody needs to the
+    # second.
+    if api_key.last_used_at is None or now - _aware(api_key.last_used_at) >= _LAST_USED_INTERVAL:
+        api_key.last_used_at = now
+        await db.flush()
     return api_key
 
 

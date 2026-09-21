@@ -29,3 +29,12 @@ class SentenceTransformerEmbeddingProvider(EmbeddingProvider):
         import asyncio
 
         return await asyncio.to_thread(lambda: self._model.encode(text).tolist())
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """One `encode` call for the lot — the model batches internally, which is
+        far cheaper than a thread hop and a forward pass per text."""
+        import asyncio
+
+        if not texts:
+            return []
+        return await asyncio.to_thread(lambda: self._model.encode(texts).tolist())

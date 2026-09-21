@@ -7,8 +7,9 @@ import { Panel } from "@/components/Panel";
 import { DataTable, type Column } from "@/components/DataTable";
 import { ErrorState, SkeletonTable } from "@/components/StateViews";
 import { StatusBadge } from "@/components/StatusBadge";
-import type { Alert, AlertRule, ApiKey, Application } from "@/lib/types";
-import { formatDate } from "@/lib/format";
+import type { Alert, AlertRule, ApiKey, Application, BudgetAction } from "@/lib/types";
+import { formatCost, formatDate } from "@/lib/format";
+import { FormError, parseNumberField } from "@/lib/validate";
 
 export default function SettingsPage() {
   return (
@@ -85,6 +86,19 @@ function ApplicationsPanel() {
     }
   }
 
+  async function handleBudgetActionChange(app: Application, action: BudgetAction) {
+    setSavingId(app.id);
+    setSaveError(null);
+    try {
+      await api.updateApplication(app.id, { budget_action: action });
+      await refetch();
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Failed to update the budget action");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   const columns: Column<Application>[] = [
     { key: "name", header: "Name", render: (a) => <span className="text-base-200">{a.name}</span> },
     {
@@ -112,6 +126,34 @@ function ApplicationsPanel() {
         />
       ),
       sortValue: (a) => a.daily_cost_budget ?? -1,
+    },
+    {
+      key: "spend",
+      header: "Spent (24h)",
+      render: (a) => <BudgetSpend app={a} />,
+    },
+    {
+      key: "budget_action",
+      header: "When over budget",
+      render: (a) => (
+        <select
+          aria-label={`Over-budget action for ${a.name}`}
+          value={a.budget_action}
+          disabled={savingId === a.id || a.daily_cost_budget === null}
+          title={
+            a.daily_cost_budget === null
+              ? "Set a daily budget first"
+              : "alert: only the alert · downgrade: serve the cheapest healthy model · block: refuse with 402"
+          }
+          onChange={(e) => void handleBudgetActionChange(a, e.target.value as BudgetAction)}
+          className="rounded border border-base-600 bg-base-800 px-2 py-1 text-xs text-base-200 disabled:cursor-not-allowed disabled:text-base-500"
+        >
+          <option value="alert">alert</option>
+          <option value="downgrade">downgrade</option>
+          <option value="block">block</option>
+        </select>
+      ),
+      sortValue: (a) => a.budget_action,
     },
     {
       key: "created_at",
@@ -176,6 +218,31 @@ function ApplicationsPanel() {
   );
 }
 
+function BudgetSpend({ app }: { app: Application }) {
+  const { data } = useFetch(
+    () =>
+      app.daily_cost_budget === null
+        ? Promise.resolve(null)
+        : api.getApplicationBudget(app.id),
+    [app.id, app.daily_cost_budget, app.budget_action]
+  );
+  if (app.daily_cost_budget === null) return <span className="text-base-500">—</span>;
+  if (!data) return <span className="text-base-500">…</span>;
+  return (
+    <span className={data.exceeded ? "font-mono text-xs text-err" : "font-mono text-xs text-base-300"}>
+      {formatCost(data.spent_24h)} / {formatCost(app.daily_cost_budget)}
+    </span>
+  );
+}
+
+type KeyStatus = "active" | "expired" | "revoked";
+
+function keyStatus(k: ApiKey, now = Date.now()): KeyStatus {
+  if (k.revoked) return "revoked";
+  if (k.expires_at && new Date(k.expires_at).getTime() <= now) return "expired";
+  return "active";
+}
+
 function ApiKeysPanel() {
   const { data: keys, loading, error, refetch: refetchKeys } = useFetch(() => api.listApiKeys(), []);
   const { data: apps } = useFetch(() => api.listApplications(), []);
@@ -185,6 +252,8 @@ function ApiKeysPanel() {
   const [scopedToApplication, setScopedToApplication] = useState(false);
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [expiresInDays, setExpiresInDays] = useState("");
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const selectedApplicationId = applicationId || apps?.items[0]?.id;
 
@@ -198,12 +267,24 @@ function ApiKeysPanel() {
         name: newKeyName.trim(),
         role: "write",
         scoped_to_application: scopedToApplication,
+        ...(expiresInDays.trim() !== ""
+          ? {
+              expires_in_days: parseNumberField("Expires in (days)", expiresInDays, {
+                min: 1,
+                max: 3650,
+                integer: true,
+              }),
+            }
+          : {}),
       });
       setRevealedKey(created.plaintext_key);
       setNewKeyName("");
+      setExpiresInDays("");
       await refetchKeys();
     } catch (err) {
-      setCreateError(err instanceof ApiError ? err.message : "Failed to create key");
+      setCreateError(
+        err instanceof ApiError || err instanceof FormError ? err.message : "Failed to create key"
+      );
     } finally {
       setCreating(false);
     }
@@ -230,7 +311,43 @@ function ApiKeysPanel() {
     {
       key: "revoked",
       header: "Status",
-      render: (k) => <StatusBadge status={k.revoked ? "revoked" : "active"} />,
+      render: (k) => <StatusBadge status={keyStatus(k)} />,
+    },
+    {
+      key: "expires_at",
+      header: "Expires",
+      render: (k) => (
+        <span className="font-mono text-xs text-base-500">
+          {k.expires_at ? formatDate(k.expires_at) : "never"}
+        </span>
+      ),
+      sortValue: (k) => k.expires_at ?? "9999",
+    },
+    {
+      key: "last_used_at",
+      header: "Last used",
+      render: (k) => (
+        <span className="font-mono text-xs text-base-500">
+          {k.last_used_at ? formatDate(k.last_used_at) : "never"}
+        </span>
+      ),
+      sortValue: (k) => k.last_used_at ?? "",
+    },
+    {
+      key: "actions",
+      header: "",
+      render: (k) =>
+        k.revoked ? null : (
+          <KeyActions
+            apiKey={k}
+            onChanged={refetchKeys}
+            onRotated={(plaintext) => {
+              setRevealedKey(plaintext);
+              void refetchKeys();
+            }}
+            onError={setActionError}
+          />
+        ),
     },
     {
       key: "created_at",
@@ -303,6 +420,16 @@ function ApiKeysPanel() {
           />
           scope to this application only
         </label>
+        <input
+          type="number"
+          min="1"
+          max="3650"
+          value={expiresInDays}
+          onChange={(e) => setExpiresInDays(e.target.value)}
+          placeholder="Expires in (days)"
+          disabled={creating}
+          className="w-36 rounded border border-base-600 bg-base-800 px-2 py-1.5 text-xs text-base-200 placeholder:text-base-500 disabled:cursor-not-allowed"
+        />
         <button
           type="button"
           onClick={handleCreate}
@@ -313,7 +440,102 @@ function ApiKeysPanel() {
         </button>
       </div>
       {createError && <p className="mt-2 text-xs text-red-400">{createError}</p>}
+      {actionError && <p className="mt-2 text-xs text-red-400">{actionError}</p>}
     </Panel>
+  );
+}
+
+function KeyActions({
+  apiKey,
+  onChanged,
+  onRotated,
+  onError,
+}: {
+  apiKey: ApiKey;
+  onChanged: () => void;
+  onRotated: (plaintext: string) => void;
+  onError: (message: string | null) => void;
+}) {
+  const [rotating, setRotating] = useState(false);
+  const [grace, setGrace] = useState("60");
+  const [busy, setBusy] = useState(false);
+
+  async function run(action: () => Promise<void>, failure: string) {
+    setBusy(true);
+    onError(null);
+    try {
+      await action();
+    } catch (err) {
+      onError(err instanceof ApiError || err instanceof FormError ? err.message : failure);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const revoke = () => {
+    if (!window.confirm(`Revoke "${apiKey.name}"? Anything using it stops working immediately.`)) {
+      return;
+    }
+    void run(async () => {
+      await api.revokeApiKey(apiKey.id);
+      onChanged();
+    }, "Failed to revoke the key");
+  };
+
+  const rotate = () =>
+    void run(async () => {
+      const graceMinutes = parseNumberField("Grace period (minutes)", grace, {
+        min: 0,
+        max: 10080,
+        integer: true,
+      });
+      const created = await api.rotateApiKey(apiKey.id, { grace_minutes: graceMinutes });
+      setRotating(false);
+      onRotated(created.plaintext_key);
+    }, "Failed to rotate the key");
+
+  const button =
+    "rounded border border-base-600 px-2 py-1 text-xs text-base-300 hover:bg-base-700 disabled:cursor-not-allowed disabled:text-base-600";
+
+  if (rotating) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <label className="text-[10px] text-base-500">
+          old key lasts
+          <input
+            type="number"
+            min="0"
+            max="10080"
+            value={grace}
+            onChange={(e) => setGrace(e.target.value)}
+            aria-label="Grace period in minutes"
+            className="mx-1 w-16 rounded border border-base-600 bg-base-800 px-1.5 py-1 text-right text-xs text-base-200"
+          />
+          min
+        </label>
+        <button type="button" onClick={rotate} disabled={busy} className={button}>
+          Confirm rotate
+        </button>
+        <button type="button" onClick={() => setRotating(false)} disabled={busy} className={button}>
+          Cancel
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1.5">
+      <button type="button" onClick={() => setRotating(true)} disabled={busy} className={button}>
+        Rotate
+      </button>
+      <button
+        type="button"
+        onClick={revoke}
+        disabled={busy}
+        className={`${button} hover:text-err`}
+      >
+        Revoke
+      </button>
+    </div>
   );
 }
 

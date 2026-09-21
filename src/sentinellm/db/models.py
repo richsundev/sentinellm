@@ -39,6 +39,12 @@ class Application(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, default=None)
     daily_cost_budget: Mapped[float | None] = mapped_column(Float, default=None)
+    # What happens to `/generate` once the trailing-24h spend passes the budget:
+    # "alert" (only the worker's alert), "downgrade" (serve from the cheapest
+    # healthy model), or "block" (refuse with 402). See `services.budget`.
+    budget_action: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="alert", server_default="alert"
+    )
 
     api_keys: Mapped[list[APIKey]] = relationship(back_populates="application")
 
@@ -56,6 +62,10 @@ class APIKey(Base, TimestampMixin):
     role: Mapped[str] = mapped_column(String(20), default="write")  # read | write | admin
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # After this instant the key stops authenticating (a rotation's grace period,
+    # or a key issued with a lifetime). None = never expires.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     scoped_to_application: Mapped[bool] = mapped_column(Boolean, default=False)
 
     application: Mapped[Application] = relationship(back_populates="api_keys")

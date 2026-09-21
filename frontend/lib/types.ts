@@ -194,24 +194,38 @@ export interface AlertRule {
   description: string;
 }
 
+export type BudgetAction = "alert" | "downgrade" | "block";
+
 export interface Application {
   id: string;
   name: string;
   description: string | null;
   daily_cost_budget: number | null;
+  budget_action: BudgetAction;
   created_at: string;
+}
+
+export interface BudgetStatus {
+  application_id: string;
+  daily_cost_budget: number | null;
+  budget_action: BudgetAction;
+  spent_24h: number;
+  remaining: number | null;
+  exceeded: boolean;
 }
 
 export interface ApplicationCreateRequest {
   name: string;
   description?: string;
   daily_cost_budget?: number;
+  budget_action?: BudgetAction;
 }
 
 export interface ApplicationUpdateRequest {
   description?: string | null;
   // `null` clears the budget; omitting the field leaves it unchanged.
   daily_cost_budget?: number | null;
+  budget_action?: BudgetAction;
 }
 
 export interface ApiKey {
@@ -221,6 +235,8 @@ export interface ApiKey {
   role: "read" | "write" | "admin";
   key_prefix: string;
   revoked: boolean;
+  revoked_at: string | null;
+  expires_at: string | null;
   scoped_to_application: boolean;
   created_at: string;
   last_used_at: string | null;
@@ -233,6 +249,7 @@ export interface ApiKeyCreated {
   key_prefix: string;
   plaintext_key: string;
   scoped_to_application: boolean;
+  expires_at?: string | null;
 }
 
 export type PromptStatus = "draft" | "testing" | "production" | "deprecated";

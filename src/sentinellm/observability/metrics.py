@@ -75,6 +75,11 @@ ROLLOUT_DECISIONS_TOTAL = Counter(
     "Automatic canary rollout decisions",
     ["decision"],  # advance | promote | rollback
 )
+BUDGET_ENFORCED_TOTAL = Counter(
+    "sentinel_budget_enforced_total",
+    "`/generate` requests affected by an application's spent daily budget",
+    ["action"],  # downgrade | block
+)
 PROMPT_ROLLOUT_DECISIONS_TOTAL = Counter(
     "sentinel_prompt_rollout_decisions_total",
     "Automatic prompt canary rollout decisions",

@@ -18,6 +18,9 @@ os.environ.setdefault("SENTINEL_EMBEDDING_PROVIDER", "mock")
 os.environ.setdefault("SENTINEL_SECRET_KEY", "test-secret")
 os.environ.setdefault("SENTINEL_DEMO_API_KEY", "test-api-key")
 os.environ.setdefault("SENTINEL_RATE_LIMIT_PER_MINUTE", "20")
+# Budget enforcement reads are cached in production; tests want each request to
+# see the spend that just happened.
+os.environ.setdefault("SENTINEL_BUDGET_CACHE_SECONDS", "0")
 
 import pytest
 import pytest_asyncio

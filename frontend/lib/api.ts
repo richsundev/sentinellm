@@ -6,6 +6,7 @@ import type {
   Application,
   ApplicationCreateRequest,
   ApplicationUpdateRequest,
+  BudgetStatus,
   CostSummary,
   Dataset,
   DatasetRecord,
@@ -211,7 +212,19 @@ export const api = {
     name: string;
     role: "read" | "write" | "admin";
     scoped_to_application?: boolean;
+    expires_in_days?: number;
   }) => mutate<ApiKeyCreated>("/applications/api-keys", { method: "POST", body: payload }),
+  revokeApiKey: (keyId: string) =>
+    mutate<ApiKey>(`/applications/api-keys/${encodeURIComponent(keyId)}/revoke`, {
+      method: "POST",
+    }),
+  rotateApiKey: (keyId: string, payload: { grace_minutes?: number; expires_in_days?: number } = {}) =>
+    mutate<ApiKeyCreated>(`/applications/api-keys/${encodeURIComponent(keyId)}/rotate`, {
+      method: "POST",
+      body: payload,
+    }),
+  getApplicationBudget: (applicationId: string) =>
+    request<BudgetStatus>(`/applications/${encodeURIComponent(applicationId)}/budget`),
 
   // Dataset import (Datasets page).
   importDataset: (formData: FormData) =>

@@ -6,6 +6,27 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **API key lifecycle** (`POST /applications/api-keys/{id}/revoke`, `/rotate`,
+  `expires_in_days` on create; migration `d4b7e91a3c52`). A leaked key can
+  finally be revoked — there was no endpoint for the `revoked` flag that
+  authentication already honoured — and keys can expire or be rotated with a
+  grace period for the old one. A key can't revoke itself; scoped admins only
+  see their own application's keys. Settings shows each key's status, expiry
+  and last use, with Revoke/Rotate actions. `last_used_at` is now written at
+  most once a minute per key instead of on every authenticated request.
+- **Budget enforcement.** `budget_action` on an application (`alert` /
+  `downgrade` / `block`) turns `daily_cost_budget` from an alert into a limit:
+  over the trailing-24h spend, `/generate` serves the cheapest healthy model
+  (never a dearer one) or refuses with 402. Approximate by design (short
+  per-replica cache, `SENTINEL_BUDGET_CACHE_SECONDS`) — decision 14.
+  `GET /applications/{id}/budget` reports live spend; Settings shows spend and
+  the action; `sentinel_budget_enforced_total` and the
+  `SentinelBudgetEnforced` alert make it visible.
+- **Faster dataset retrieval.** The corpus behind `/generate` + `dataset_id`
+  is embedded once and reused (`retrieval/corpus_cache.py`, unit vectors,
+  batched embedding for the sentence-transformers provider): ~9.5ms → ~1.3ms
+  per retrieval on the benchmark, and one model call per dataset instead of
+  hundreds per request with a real embedding model.
 - **Prompt serving and autonomous prompt canaries** (decision 13). `/generate`
   with `prompt_id` + `prompt_variables` renders the registry template
   server-side — the pinned `prompt_version`, else the newest production

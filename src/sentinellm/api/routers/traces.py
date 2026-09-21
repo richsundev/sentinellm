@@ -55,6 +55,7 @@ _EXECUTION_METADATA = frozenset(
         "prompt_variables",
         "prompt_rollout_id",
         "prompt_rollout_arm",
+        "budget_downgrade",
     }
 )
 
